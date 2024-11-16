@@ -25,8 +25,8 @@ library(reshape2)
 library(plotly)
 library(radarchart)
 require(visNetwork, quietly = TRUE)
-#if (!require("BiocManager", quietly = TRUE))
-#  install.packages("BiocManager")
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
 #BiocManager::install(version = "3.20")
 #source("https://bioconductor.org/biocLite.R")
 #options(repos = BiocInstaller::biocinstallRepos())
@@ -34,10 +34,10 @@ require(visNetwork, quietly = TRUE)
 #BiocManager::install(c("ggtree","treeio"))
 #setRepositories(addURLs = c(BioC = "https://bioconductor.org/packages/3.8/bioc"))
 
-library(ggtree)
-library(treeio)
+#library(ggtree)
+#library(treeio)
 #### LOAD ####
-style_file <- system.file(file.path("style.js"),package="cancer-grn")
+#style_file <- system.file(file.path("style.js"),package="cancer-grn")
 
 
 load("lassodataMYCsign2017-11-08.rdata")
@@ -648,7 +648,7 @@ ui <- shinyUI(fluidPage(#theme = shinytheme("united"),
     mainPanel(
       tabsetPanel(
         
-        tabPanel("CytoscapeJS",h4("This tab displays the seleceted GRN where blue links reflect up regulation while red reflect negative down regulation."),tags$hr(),selectInput("clay",label="Layout:",c("CoSE"="cose","Cola"="cola","Concentric"="concentric","Circle"="circle","Dagre"="dagre","Grid"="grid","arbor"="arbor","markov"="cytoscape-markov-cluster")),cyjShinyOutput("cyjShiny",height='800px')),
+        tabPanel("CytoscapeJS",h4("This tab displays the seleceted GRN where blue links reflect up regulation while red reflect negative down regulation."),tags$hr(),selectInput("clay",label="Layout:",c("CoSE"="cose","Cola"="cola","Concentric"="concentric","Circle"="circle","breadthfirst"="breadthfirst","grid"="grid","random"='random',"preset"='preset',"fcose"='fcose')),cyjShinyOutput("cyjShiny",height='800px')),
         tabPanel("forceSign",h4("This tab displays the seleceted GRN where node size and color represents overall, degree blue links reflect up regulation while red reflect negative down regulation."),tags$hr(),forceNetworkOutput("forcelasso",height='800px')),
         
         tabPanel("overlap",h4("This tab displays the entire bootstrap support range from 0 to 1, as well as overlap between all bootstrap GRNs for measured (blue) and shuffled (red) data. The FDR is estimated via a null background model based on networks inferred from shuffled data. This is done to restrict inclusion of false links by setting FDR e.g. to 5%. The dashed orange line represents the cutoff where this is reached, The dashed grey line shows how the FDR behaves as a function of the bootstrap support."),tags$hr(),plotlyOutput("overlapPLOT"))#,downloadButton('downloadData', 'download'))
