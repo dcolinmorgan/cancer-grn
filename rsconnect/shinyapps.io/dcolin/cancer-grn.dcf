@@ -1,0 +1,12 @@
+name: cancer-grn
+title: cancer-grn
+username: dcolin
+account: dcolin
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 13357742
+bundleId: 9371986
+url: https://dcolin.shinyapps.io/cancer-grn/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE

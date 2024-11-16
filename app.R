@@ -13,6 +13,8 @@ library(plyr)
 library('phangorn')
 library(magrittr)
 #library(rcytoscapejs)
+library(cyjShiny)
+library(graph)
 library(networkD3)
 library(pracma)
 library(devtools)
@@ -23,16 +25,19 @@ library(reshape2)
 library(plotly)
 library(radarchart)
 require(visNetwork, quietly = TRUE)
-if (!require("BiocManager", quietly = TRUE))
-  install.packages("BiocManager")
-BiocManager::install(version = "3.20")
+#if (!require("BiocManager", quietly = TRUE))
+#  install.packages("BiocManager")
+#BiocManager::install(version = "3.20")
 #source("https://bioconductor.org/biocLite.R")
 #options(repos = BiocInstaller::biocinstallRepos())
 #getOption("repos")
-BiocManager::install(c("ggtree","treeio"))
+#BiocManager::install(c("ggtree","treeio"))
+#setRepositories(addURLs = c(BioC = "https://bioconductor.org/packages/3.8/bioc"))
+
 library(ggtree)
 library(treeio)
 #### LOAD ####
+style_file <- system.file(file.path("style.js"),package="cancer-grn")
 
 
 load("lassodataMYCsign2017-11-08.rdata")
@@ -72,7 +77,7 @@ server <- function(input, output) {
     edgeList<-datum[[input$sparsity]][1:6]
     colnames(edgeList) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
     if(input$self==FALSE){
-      edgeList<-edgeList%>%filter(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+      edgeList<-edgeList%>%filter(SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
     }
     edgeList})
   
@@ -110,7 +115,7 @@ server <- function(input, output) {
     edgeList<-datum[[input$sparsity]][1:6]
     colnames(edgeList) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
     if(input$self==FALSE){
-      edgeList<-edgeList%>%filter(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+      edgeList<-edgeList%>%filter(SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
     }
     
     gD<-simplify(graph.data.frame(edgeList,directed=TRUE))
@@ -170,49 +175,54 @@ server <- function(input, output) {
   }
   
   output$vizNet <- renderVisNetwork({
-
+    wee <- "lassodataMYCsign"
+    datum <- ddd[[wee]]
     
-    wee<-paste("lassodataMYCsign")
-    datum<-ddd[[wee]]
+    # Fix column names for edges
+    edges <- datum[[input$sparsity]][1:3]
+    colnames(edges) <- c("source", "target", "width") # Changed from/to to source/target
     
-    edges<-datum[[input$sparsity]][1:3]
-    colnames(edges) <- c("from", "to","width")#,"Link2","Sign", "Weight")
-    
-    gD<-simplify(graph.data.frame(edges,directed=TRUE))
-    nodes <- data.frame(ID = c(0:(igraph::vcount(gD) - 1)),nName = igraph::V(gD)$name)
+    gD <- simplify(graph.data.frame(edges, directed=TRUE))
+    nodes <- data.frame(id = c(0:(igraph::vcount(gD) - 1)), label = igraph::V(gD)$name)
     getNodeID <- function(x){which(x == igraph::V(gD)$name) - 1}
     
-    edges <- plyr::ddply(edges, .variables = c("from", "to", "width"), 
-                         function (x) data.frame(SourceID = getNodeID(x$from), 
-                                                 TargetID = getNodeID(x$to)))
-    nodes <- cbind(nodes, nodeDegree=igraph::degree(gD, v = igraph::V(gD), mode = "all"))
-    betAll <- igraph::betweenness(gD, v = igraph::V(gD), directed = FALSE) / (((igraph::vcount(gD) - 1) * (igraph::vcount(gD)-2)) / 2)
+    # Update column references in ddply
+    edges <- plyr::ddply(edges, .variables = c("source", "target", "width"), 
+                        function (x) data.frame(SourceID = getNodeID(x$source), 
+                                              TargetID = getNodeID(x$target)))
+    
+    nodes <- cbind(nodes, group=igraph::degree(gD, v = igraph::V(gD), mode = "all"))
+    betAll <- igraph::betweenness(gD, v = igraph::V(gD), directed = FALSE) / 
+              (((igraph::vcount(gD) - 1) * (igraph::vcount(gD)-2)) / 2)
     betAll.norm <- (betAll - min(betAll))/(max(betAll) - min(betAll))
-    nodes <- cbind(nodes, nodeBetweenness=100*betAll.norm) # We are scaling the value by multiplying it by 100 for visualization purposes only (to create larger nodes)
+    nodes <- cbind(nodes, value=100*betAll.norm)
     rm(betAll, betAll.norm)
-    colnames(nodes) <- c("id", "label","group","font.size")#,"Sign", "Weight")
+    
     dsAll <- igraph::similarity.dice(gD, vids = igraph::V(gD), mode = "all")
     
     F1 <- function(x) {data.frame(diceSim = dsAll[x$SourceID +1, x$TargetID + 1])}
-    edges <- plyr::ddply(edges, .variables=c("from", "to", "width", "SourceID", "TargetID"), 
-                         function(x) data.frame(F1(x)))
+    edges <- plyr::ddply(edges, .variables=c("source", "target", "width", "SourceID", "TargetID"), 
+                        function(x) data.frame(F1(x)))
     
     rm(dsAll, F1, getNodeID, gD)
     
-    F2 <- colorRampPalette(c("#0000FF", "#FF0000"), bias = nrow(nodes), space = "rgb", interpolate = "linear")
+    F2 <- colorRampPalette(c("#0000FF", "#FF0000"), bias = nrow(edges), space = "rgb", interpolate = "linear")
     colCodes <- F2(length(unique(edges$diceSim)))
-    edges_col <- sapply(edges$Weight, function(x) colCodes[which(sort(unique(edges$Weight)) == x)])
-    colnames(edges) <- c("label", "too","width","from","to", "Weight")
-    rm(colCodes, F2)
+    edges_col <- sapply(edges$width, function(x) colCodes[which(sort(unique(edges$width)) == x)])
     
-    visNetwork(nodes, edges,width="100%") %>% visLegend() %>%
-      visEdges(shadow = FALSE,
-               arrows ="from",#edges$from, list(to = list(enabled = TRUE, scaleFactor = 2)),
-               color = list(color = "lightblue", highlight = "red")) %>%
-      visLayout(randomSeed = 12) %>% # to have always the same network
-      visOptions(manipulation = TRUE)%>%
-      visClusteringByColor(colors=c("red") ) %>%
-      visClusteringByGroup(groups )
+    # Ensure proper column names for visNetwork
+    edges$from <- edges$SourceID
+    edges$to <- edges$TargetID
+    
+    visNetwork(nodes, edges, width="100%") %>% 
+        visLegend() %>%
+        visEdges(shadow = FALSE,
+                arrows = "from",
+                color = list(color = "lightblue", highlight = "red")) %>%
+        visLayout(randomSeed = 12) %>%
+        visOptions(manipulation = TRUE) %>%
+        visClusteringByColor(colors=c("red")) %>%
+        visClusteringByGroup()
   })
   output$text1 <- renderPrint({ 
     if(input$raw==FALSE){
@@ -237,7 +247,7 @@ server <- function(input, output) {
     net1<-data.frame(datum[input$sparsity],stringsAsFactors = FALSE)
     names(net1) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
     if(input$self==FALSE){
-      net1<-net1%>%filter(~as.character(SourceName)!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+      net1<-net1%>%filter(as.character(SourceName)!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
     }
     net1<-network(net1[1:2],directed=TRUE,loops=TRUE)
     
@@ -246,86 +256,96 @@ server <- function(input, output) {
   })
   
   output$cyjShiny <-renderCyjShiny({
-    # if(input$raw==FALSE){
-    #   wee<-paste(input$data,"dataMYCsign",sep="")
-    #   datum<-ddd[[wee]]
-    # }else{
-    #   inFile <- input$file1
-    #   if (is.null(inFile))
-    #     return(NULL)
-    #   datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-    # }
-    
-    # edgeData<-datum[[input$sparsity]][1:6]
-    # colnames(edgeData) <- c("sourceName", "targetName","link1","link2","link", "weight")
-    # if(input$self==FALSE){
-    #   edgeData<-edgeData%>%filter(~as.character(sourceName)!=as.character(targetName))####REMOVE SELF LINKS -- works on test network file
-    # }
-    
-    
-    # edgeData$edgeTargetShape<-edgeData$link1
-    # edgeData$edgeTargetShape<-gsub(-1,"tee",edgeData$edgeTargetShape)
-    # edgeData$edgeTargetShape<-gsub(1,"triangle",edgeData$edgeTargetShape)
-    
-    # edgeData$color<-edgeData$link1
-    # edgeData$color<-gsub(-1,"#FF0000",edgeData$color)
-    # edgeData$color<-gsub(1,"#0000FF",edgeData$color)
-    
-    # gD<-simplify(graph.data.frame(edgeData,directed=TRUE))
-    # nodeData <- data.frame(id = c(0:(igraph::vcount(gD) - 1)),name = igraph::V(gD)$name)
-    # getNodeID <- function(x){which(x == igraph::V(gD)$name) - 1}
-    
-    # edgeData <- plyr::ddply(edgeData, .variables = c("sourceName", "targetName", "weight","color","edgeTargetShape"),
-    #                         function (x) data.frame(source = getNodeID(x$source),
-    #                                                 target = getNodeID(x$target)))
-    # edgeData$targetShape<-edgeData$edgeTargetShape
-    # edgeData$targetShape<-edgeData$edgeTargetShape
-    
-    # nodeData$shape <- "ellipse"
     if(input$raw==FALSE){
       wee<-paste(input$data,"dataMYCsign",sep="")
-      datum<-ddd[[wee]]}else{
-        inFile <- input$file1
-        if (is.null(inFile))
-          return(NULL)
-        datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-      }
-    
-    edgeList<-datum[[input$sparsity]][1:6]
-    colnames(edgeList) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-    if(input$self==FALSE){
-      edgeList<-edgeList%>%filter(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+      datum<-ddd[[wee]]
+    }else{
+      inFile <- input$file1
+      if (is.null(inFile))
+        return(NULL)
+      datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
     }
     
-    gD<-simplify(graph.data.frame(edgeList,directed=TRUE))
-    nodeList <- data.frame(ID = c(0:(igraph::vcount(gD) - 1)),nName = igraph::V(gD)$name)
+    edgeData<-datum[[input$sparsity]][1:6]
+    colnames(edgeData) <- c("sourceName", "targetName","link1","link2","link", "weight")
+    if(input$self==FALSE){
+      edgeData<-edgeData%>%filter(as.character(sourceName)!=as.character(targetName))####REMOVE SELF LINKS -- works on test network file
+    }
+    
+    
+    edgeData$edgeTargetShape<-edgeData$link1
+    edgeData$edgeTargetShape<-gsub(-1,"tee",edgeData$edgeTargetShape)
+    edgeData$edgeTargetShape<-gsub(1,"triangle",edgeData$edgeTargetShape)
+    
+    edgeData$color<-edgeData$link1
+    edgeData$color<-gsub(-1,"#FF0000",edgeData$color)
+    edgeData$color<-gsub(1,"#0000FF",edgeData$color)
+    
+    gD<-simplify(graph.data.frame(edgeData,directed=TRUE))
+    nodeData <- data.frame(id = c(0:(igraph::vcount(gD) - 1)),name = igraph::V(gD)$name)
     getNodeID <- function(x){which(x == igraph::V(gD)$name) - 1}
     
-    edgeList <- plyr::ddply(edgeList, .variables = c("SourceName", "TargetName", "Weight"), 
-                            function (x) data.frame(SourceID = getNodeID(x$SourceName), 
-                                                    TargetID = getNodeID(x$TargetName)))
-    nodeList <- cbind(nodeList, nodeDegree=igraph::degree(gD, v = igraph::V(gD), mode = "all"))
-    betAll <- igraph::betweenness(gD, v = igraph::V(gD), directed = FALSE) / (((igraph::vcount(gD) - 1) * (igraph::vcount(gD)-2)) / 2)
-    betAll.norm <- (betAll - min(betAll))/(max(betAll) - min(betAll))
-    nodeList <- cbind(nodeList, nodeBetweenness=100*betAll.norm) # We are scaling the value by multiplying it by 100 for visualization purposes only (to create larger nodes)
-    rm(betAll, betAll.norm)
+    edgeData <- plyr::ddply(edgeData, .variables = c("sourceName", "targetName", "weight","color","edgeTargetShape"),
+                            function (x) data.frame(source = getNodeID(x$source),
+                                                    target = getNodeID(x$target)))
+    edgeData$targetShape<-edgeData$edgeTargetShape
+    nodeData$shape <- "ellipse"
+    # if(input$raw==FALSE){
+    #   wee<-paste(input$data,"dataMYCsign",sep="")
+    #   datum<-ddd[[wee]]}else{
+    #     inFile <- input$file1
+    #     if (is.null(inFile))
+    #       return(NULL)
+    #     datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
+    #   }
     
-    dsAll <- igraph::similarity.dice(gD, vids = igraph::V(gD), mode = "all")
+    # edgeList<-datum[[input$sparsity]][1:6]
+    # colnames(edgeList) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
+    # if(input$self==FALSE){
+    #   edgeList<-edgeList%>%filter(SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+    # }
     
-    F1 <- function(x) {data.frame(diceSim = dsAll[x$SourceID +1, x$TargetID + 1])}
-    edgeList <- plyr::ddply(edgeList, .variables=c("SourceName", "TargetName", "Weight", "SourceID", "TargetID"), 
-                            function(x) data.frame(F1(x)))
+    # gD<-simplify(graph.data.frame(edgeList,directed=TRUE))
+    # nodeList <- data.frame(ID = c(0:(igraph::vcount(gD) - 1)),nName = igraph::V(gD)$name)
+    # getNodeID <- function(x){which(x == igraph::V(gD)$name) - 1}
+    
+    # edgeList <- plyr::ddply(edgeList, .variables = c("SourceName", "TargetName", "Weight"), 
+    #                         function (x) data.frame(SourceID = getNodeID(x$SourceName), 
+    #                                                 TargetID = getNodeID(x$TargetName)))
+    # nodeList <- cbind(nodeList, nodeDegree=igraph::degree(gD, v = igraph::V(gD), mode = "all"))
+    # betAll <- igraph::betweenness(gD, v = igraph::V(gD), directed = FALSE) / (((igraph::vcount(gD) - 1) * (igraph::vcount(gD)-2)) / 2)
+    # betAll.norm <- (betAll - min(betAll))/(max(betAll) - min(betAll))
+    # nodeList <- cbind(nodeList, nodeBetweenness=100*betAll.norm) # We are scaling the value by multiplying it by 100 for visualization purposes only (to create larger nodes)
+    # rm(betAll, betAll.norm)
+    
+    # dsAll <- igraph::similarity.dice(gD, vids = igraph::V(gD), mode = "all")
+    
+    # F1 <- function(x) {data.frame(diceSim = dsAll[x$SourceID +1, x$TargetID + 1])}
+    # edgeList <- plyr::ddply(edgeList, .variables=c("SourceName", "TargetName", "Weight", "SourceID", "TargetID"), 
+    #                         function(x) data.frame(F1(x)))
     
 
     
-    F2 <- colorRampPalette(c("#0000FF", "#FF0000"), bias = nrow(edgeList), space = "rgb", interpolate = "linear")
-    colCodes <- F2(length(unique(edgeList$Weight)))
-    edges_col <- sapply(edgeList$Weight, function(x) colCodes[which(sort(unique(edgeList$Weight)) == x)])
+    # F2 <- colorRampPalette(c("#0000FF", "#FF0000"), bias = nrow(edgeList), space = "rgb", interpolate = "linear")
+    # colCodes <- F2(length(unique(edgeList$Weight)))
+    # edges_col <- sapply(edgeList$Weight, function(x) colCodes[which(sort(unique(edgeList$Weight)) == x)])
     
-    rm(colCodes, F2)
-    nodeData <- cbind(nodeData, nodeDegree=igraph::degree(gD, v = igraph::V(gD), mode = "all"))
+    # rm(colCodes, F2)
+    nodeData <- cbind(nodeData, nodeDegree = igraph::degree(gD, v = igraph::V(gD), mode = "all"))
+    nodeData$rank<-nodeData$nodeDegree/max(nodeData$nodeDegree)
+    edgeData[] <- lapply(edgeData, function(x) {
+        if (is.factor(x)) {
+          return(as.character(x))
+        } else {
+          return(x)
+        }
+      })
+    if (!"interaction" %in% colnames(edgeData)) {
+      edgeData$interaction <- ifelse(edgeData$targetShape == "tee", "inhibit",
+                                     ifelse(edgeData$targetShape == "triangle", "stimulate", NA))  # NA for other shapes
+    }
     graph_json <- toJSON(dataFramesToJSON(edgeData, nodeData), auto_unbox=TRUE)
-    cyjShiny(graph_json, layout=input$clay)
+    cyjShiny(graph_json, layout=input$clay, styleFile='style.js')
     
 
   })
@@ -455,7 +475,7 @@ server <- function(input, output) {
       net1<-data.frame(net1)
       names(net1) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
       if(input$self==FALSE){
-        net1<-net1%>%filter(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+        net1<-net1%>%filter(SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
       }
       
       for(k in 1:length(cellline)){
@@ -464,7 +484,7 @@ server <- function(input, output) {
         
         names(net2) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
         if(input$self==FALSE){
-          net2<-net2%>%filter(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+          net2<-net2%>%filter(SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
         }
         a<-intersect(net1,net2)
         b<-union(net1,net2)
@@ -509,7 +529,7 @@ server <- function(input, output) {
       net1<-data.frame(net1)
       names(net1) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
       if(input$self==FALSE){
-        net1<-net1%>%filter(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+        net1<-net1%>%filter(SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
       }
       
       for(k in 1:length(cellline)){
@@ -519,7 +539,7 @@ server <- function(input, output) {
         
         names(net2) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
         if(input$self==FALSE){
-          net2<-net2%>%filter(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+          net2<-net2%>%filter(SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
         }
         a<-intersect(net1,net2)
         b<-union(net1,net2)
@@ -562,14 +582,14 @@ server <- function(input, output) {
       net1<-data.frame(net1)
       names(net1) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
       if(input$self==FALSE){
-        net1<-net1%>%filter(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+        net1<-net1%>%filter(SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
       }
       for(k in 1:length(cellline)){
         net2<-datum[k]
         net2<-data.frame(net2)
         names(net2) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
         if(input$self==FALSE){
-          net2<-net2%>%filter(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+          net2<-net2%>%filter(SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
         }
         a<-intersect(net1,net2)
         b<-union(net1,net2)
