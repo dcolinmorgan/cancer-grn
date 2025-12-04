@@ -473,14 +473,17 @@ server <- function(input, output) {
       b[i]<-trapz(long$bins[c(((hh+1)+i):(hh*2))]/(dim(data)[1]), long$value[c(((hh+1)+i):(hh*2))]/max(long$value[c(i:(dim(data)[1]))]))
     }
     # ab<-((1002-(length(na.omit(b/a)))))
+    fdr_x_vals <- c(1:(dim(data)[1]))/(dim(data)[1])
+    fdr_y_vals <- na.locf(b/a)/3
+    fdr_cutoff_x <- approx(x = fdr_y_vals, y = fdr_x_vals, xout = 0.05, rule = 2)$y
     ww<-plot_ly() %>%
       add_lines(x = long$bins[c(ff:(dim(data)[1]))]/(dim(data)[1]), y = (long$value[c(ff:(dim(data)[1]))]/max(long$value[c(ff:(dim(data)[1]))])), name = "Measured",line = list(color = 'rgb(22, 96, 167)')) %>%
       add_lines(x = long$bins[c(gg:(hh*2))]/(dim(data)[1]), y = (long$value[c(gg:(hh*2))]/max(long$value[c(ff:(dim(data)[1]))])), name = "Shuffled", line = list(color = 'rgb(205, 12, 24)'))%>%
       add_lines(x = long$bins[(1+hh*3):(hh*4)]/(dim(data)[1]), y = (long$value[(1+hh*3):(hh*4)]/max(long$value[(1+hh*3):(hh*4)]))*ccc, name = "Overlap, Measured", yaxis = "y2",fill = 'tozeroy',line = list(color = 'rgba(55, 15, 255,0.1)'),fillcolor = list(color = 'rgba(55, 15, 255,0.01)')) %>%
       add_lines(x = long$bins[(1+hh*2):(hh*3)]/(dim(data)[1]), y = (long$value[(1+hh*2):(hh*3)]/max(long$value[(1+hh*2):(hh*3)]))*ccc, name = "Overlap, Shuffled", yaxis = "y2",fill = 'tozeroy',line = list(color = 'rgba(207, 114, 129,0.1)'),fillcolor = list(color = 'rgba(207, 114, 129,0.01)')) %>%
       # add_lines(x=c(1:(length(na.omit(b/a)))/(dim(data)[1])),y=na.omit(b/a), name = "FDR",line = list(color = 'grey',dash = "dash")) %>%
-      add_lines(x=c(1:(dim(data)[1]))/(dim(data)[1]),y=na.locf(b/a)/3, name = "FDR",line = list(color = 'grey',dash = "dash")) %>%
-      add_trace(x = as.numeric(ee), y = c(0,1),line = list(dash = "dash",color = "orange"),type='scatter',mode='lines',name="support at cutoff") %>%
+      add_lines(x=fdr_x_vals, y=fdr_y_vals, name = "FDR",line = list(color = 'grey',dash = "dash")) %>%
+      add_trace(x = fdr_cutoff_x, y = c(0,1),line = list(dash = "dash",color = "orange"),type='scatter',mode='lines',name="support at cutoff") %>%
       # add_trace(x = (cutoff$CUT[1])-.02, y = c(0,1),line = list(dash = "dash",color = "orange"),type='scatter',mode='lines',name="support at cutoff") %>%
       layout(margin = list(l=100, r=50, b=50, t=50, pad=0),
              paper_bgcolor='rgba(0,0,0,0)',
