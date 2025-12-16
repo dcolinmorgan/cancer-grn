@@ -1,462 +1,408 @@
-
-
-##improve file grep via github API https://developer.github.com/v3/repos/#list-all-topics-for-a-repository
-
-#### Load necessary packages and data ####
+#### Load necessary packages ####
 library(shiny)
 library(igraph)
 library(zoo)
 library(dplyr)
 library(gtools)
-#library(shinythemes)
-library(plyr)
-library('phangorn')
-library(magrittr)
-library(rcytoscapejs)
+library(cyjShiny)
 library(networkD3)
 library(pracma)
-library(devtools)
-library("RColorBrewer")
-require(pracma)
 library(network)
 library(reshape2)
 library(plotly)
 library(radarchart)
-require(visNetwork, quietly = TRUE)
-source("https://bioconductor.org/biocLite.R")
-options(repos = BiocInstaller::biocinstallRepos())
-getOption("repos")
-library(ggtree)
-library(treeio)
-#### LOAD ####
+library(visNetwork)
 
+# Optional: Load graph if available (Bioconductor dependency often used with graph structures)
+if (requireNamespace("graph", quietly = TRUE)) {
+  library(graph)
+}
 
-load("lassodataMYCsign2017-11-08.rdata")
-load("lscodataMYCsign2017-11-08.rdata")
-# load("tlscodataMYCsign2018-12-21.rdata")
-load("tlscodataMYCsign2019-02-14.rdata")
+#### Data Loading ####
+# Load all RData files into the global environment
+# We wrap this in a try-catch or check existence to avoid errors if files are missing during dev
+rdata_files <- c(
+  "lassodataMYCsign2017-11-08.rdata",
+  "lscodataMYCsign2017-11-08.rdata",
+  "tlscodataMYCsign2019-02-14.rdata",
+  "lassoMYCsignlinkplotdata2017-02-08.rdata",
+  "lscoMYCsignlinkplotdata2017-02-14.rdata",
+  "tlscoMYCsignlinkplotdata2019-02-14.rdata"
+)
 
-# ### LOAD PLOT DATA ###
-load("lassoMYCsignlinkplotdata2017-02-08.rdata")
-load("lscoMYCsignlinkplotdata2017-02-14.rdata")
-load("tlscoMYCsignlinkplotdata2019-02-14.rdata")
+for (file in rdata_files) {
+  if (file.exists(file)) {
+    load(file)
+  }
+}
 
+# Organize global data into structured lists for easier access
+# We use get() to retrieve variables by name if they exist, handling the dynamic loading
+get_if_exists <- function(var_name) {
+  if (exists(var_name)) get(var_name) else NULL
+}
 
+network_data_map <- list(
+  lasso = get_if_exists("lassodataMYCsign"),
+  lsco = get_if_exists("lscodataMYCsign"),
+  tlsco = get_if_exists("tlscodataMYCsign")
+)
 
-ddd<-list(lassodataMYCsign=lassodataMYCsign,lscodataMYCsign=lscodataMYCsign,tlscodataMYCsign=tlscodataMYCsign)#tlscodataMYCsign)
-eee<-list(lassoMYCsignlinkplotdata=lassoMYCsignlinkplotdata,lscoMYCsignlinkplotdata=lscoMYCsignlinkplotdata,tlscoMYCsignlinkplotdata=tlscoMYCsignlinkplotdata)
-fff<-list(lassonameMYCsign=lassonameMYCsign,lsconameMYCsign=lsconameMYCsign,tlsconameMYCsign=tlsconameMYCsign)
-ggg<-list(lassoMYCsignlinkcutdata=lassoMYCsignlinkcutdata,lscoMYCsignlinkcutdata=lscoMYCsignlinkcutdata,tlscoMYCsignlinkcutdata=tlscoMYCsignlinkcutdata)
+plot_data_map <- list(
+  lasso = get_if_exists("lassoMYCsignlinkplotdata"),
+  lsco = get_if_exists("lscoMYCsignlinkplotdata"),
+  tlsco = get_if_exists("tlscoMYCsignlinkplotdata")
+)
+
+network_names_map <- list(
+  lasso = get_if_exists("lassonameMYCsign"),
+  lsco = get_if_exists("lsconameMYCsign"),
+  tlsco = get_if_exists("tlsconameMYCsign")
+)
+
+cutoff_data_map <- list(
+  lasso = get_if_exists("lassoMYCsignlinkcutdata"),
+  lsco = get_if_exists("lscoMYCsignlinkcutdata"),
+  tlsco = get_if_exists("tlscoMYCsignlinkcutdata")
+)
+
+#### Network Operations Manager (OOP-style) ####
+NetworkManager <- list(
+  
+  # Process a raw edge list dataframe into a standardized format
+  process_edge_list = function(df, remove_self_loops = FALSE) {
+    if (is.null(df) || ncol(df) < 6) return(NULL)
+    
+    # Subset and rename standard columns
+    df_clean <- df[, 1:6]
+    colnames(df_clean) <- c("source_name", "target_name", "link", "link2", "sign", "weight")
+    
+    # Ensure numeric columns are numeric to avoid "invalid type (character)" errors
+    df_clean$link <- as.numeric(as.character(df_clean$link))
+    df_clean$link2 <- as.numeric(as.character(df_clean$link2))
+    df_clean$sign <- as.numeric(as.character(df_clean$sign))
+    df_clean$weight <- as.numeric(as.character(df_clean$weight))
+    
+    # Filter self-loops if requested
+    if (remove_self_loops) {
+      df_clean <- df_clean %>% 
+        filter(as.character(source_name) != as.character(target_name))
+    }
+    
+    return(df_clean)
+  },
+  
+  # Calculate Jaccard Similarity Matrix for a list of networks
+  calculate_jaccard_matrix = function(network_list, remove_self_loops = FALSE) {
+    n <- length(network_list)
+    jaccard_mat <- matrix(0, n, n)
+    
+    # Pre-process all networks to ensure consistent format
+    processed_nets <- lapply(network_list, function(net) {
+      NetworkManager$process_edge_list(as.data.frame(net), remove_self_loops)
+    })
+    
+    for (i in 1:n) {
+      for (k in 1:n) {
+        net1 <- processed_nets[[i]]
+        net2 <- processed_nets[[k]]
+        
+        if (is.null(net1) || is.null(net2)) {
+          jaccard_mat[i, k] <- 0
+          next
+        }
+        
+        # Create unique edge identifiers for comparison
+        edges1 <- paste(net1$source_name, net1$target_name)
+        edges2 <- paste(net2$source_name, net2$target_name)
+        
+        intersection_size <- length(intersect(edges1, edges2))
+        union_size <- length(union(edges1, edges2))
+        
+        jaccard_mat[i, k] <- if (union_size > 0) intersection_size / union_size else 0
+      }
+    }
+    return(jaccard_mat)
+  }
+)
 
 #### Server ####
 server <- function(input, output) {
-  # v <- reactiveValues(data = NULL)
-  output$table <- renderTable({
-    datasetInput()
-    
-    
-    # if(input$demo==TRUE | input$demo2==TRUE|input$demo3==TRUE){
-    # observeEvent(input$demo, {
-    #   # wee<-paste("lassodataMYCsign")
-    #   v$data<-ddd[[paste("lassodataMYCsign")]]
-    # })
-    # observeEvent(input$demo2, {
-    #   # wee<-paste("lscodataMYCsign")
-    #   v$data<-ddd[[paste("lscodataMYCsign")]]
-    # }) 
-    # observeEvent(input$demo3, {
-    #   # wee<-paste("tlscodataMYCsign")
-    #   v$data<-ddd[[paste("tlscodataMYC")]]
-    # }) 
-    # 
-    # observeEvent(input$reset, {
-    #   v$data <- NULL
-    #   inFile <- input$file1
-    #   if (is.null(inFile)) return(NULL)
-    #   v$data <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-    # })
-    # if (is.null(v$data)) return()
-    # edgeList<-v$data[[input$sparsity]][1:6]
-    # colnames(edgeList) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-    # if(input$self==FALSE){
-    # edgeList<-edgeList%>%filter_(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
-    # }
-    
-    
-  })
-  datasetInput <- reactive({
-    if(input$raw==FALSE){
-      wee<-paste(input$data,"dataMYCsign",sep="")
-      datum<-ddd[[wee]]}else{
-        # }else if(input$demo4==TRUE){
-        inFile <- input$file1
-        if (is.null(inFile))
-          return(NULL)
-        datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-      }
-    
-    edgeList<-datum[[input$sparsity]][1:6]
-    colnames(edgeList) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-    if(input$self==FALSE){
-      edgeList<-edgeList%>%filter_(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+  
+  # Reactive: Get the current set of networks (either pre-loaded or uploaded)
+  current_network_set <- reactive({
+    if (input$raw == FALSE) {
+      return(network_data_map[[input$data]])
+    } else {
+      inFile <- input$file1
+      if (is.null(inFile)) return(NULL)
+      
+      # Read uploaded files
+      data_list <- lapply(rev(mixedsort(inFile$datapath)), read.csv, header = FALSE, sep = input$sep)
+      names(data_list) <- rev(mixedsort(inFile$name))
+      return(data_list)
     }
-    edgeList})
+  })
   
-  # datasetName <- reactive({
-  #   if(input$raw==FALSE){
-  #     qee<-paste(input$data,"nameMYCsign",sep="")
-  #     name<-fff[[paste(input$data,"nameMYCsign",sep="")]][[input$sparsity]]}else{return()}
-  #   name})
+  # Reactive: Get the specific single network selected by sparsity/index
+  selected_network_raw <- reactive({
+    data_set <- current_network_set()
+    if (is.null(data_set)) return(NULL)
+    
+    idx <- as.numeric(input$sparsity)
+    # Safety check for index bounds
+    if (idx > length(data_set)) idx <- length(data_set)
+    if (idx < 1) idx <- 1
+    
+    return(data_set[[idx]])
+  })
   
+  # Reactive: Processed Edge List for the selected network
+  processed_edge_list <- reactive({
+    raw_data <- selected_network_raw()
+    NetworkManager$process_edge_list(as.data.frame(raw_data), input$self == FALSE)
+  })
+  
+  # Output: Table
+  output$table <- renderTable({
+    processed_edge_list()
+  })
+  
+  # Output: Download Data
   output$downloadData <- downloadHandler(
-    # if(input$raw==FALSE){
-    #   wee<-paste(input$data,"nameMYCsign",sep="")
-    #   name<-fff[[wee]]
-    #   }else{return()}
-    # cc=datasetName
-    filename = function() { paste(fff[[paste(input$data,"nameMYCsign",sep="")]][[input$sparsity]], input$filetype, sep = ".") },
+    filename = function() {
+      if (input$raw == FALSE) {
+        name_list <- network_names_map[[input$data]]
+        idx <- as.numeric(input$sparsity)
+        if (!is.null(name_list) && idx <= length(name_list)) {
+          paste(name_list[[idx]], input$filetype, sep = ".")
+        } else {
+          paste("network_data", input$filetype, sep = ".")
+        }
+      } else {
+        paste("network_data", input$filetype, sep = ".")
+      }
+    },
     content = function(file) {
       sep <- switch(input$filetype, "csv" = ",", "tsv" = "\t")
-      write.table(datasetInput(), file, sep = sep,row.names=FALSE) })
-  
-  output$downloadPlot <- downloadHandler(
-    # filename = function() { paste(fff[[paste(input$data,"nameMYCsign",sep="")]][[input$sparsity]], input$filetype, sep = ".") },
-    # content = function(file) {
-    #   ggsave(file, plot = FORCE(), device = "png")
-    filename = "Shinyplot.png",
-    content = function(file) {
-      # png(file,width=12,height=8)
-      FORCE()%>%saveNetwork(file = filename)
-      # dev.off()
-      # }) 
+      write.table(processed_edge_list(), file, sep = sep, row.names = FALSE)
     }
   )
   
+  # Output: Force Network (D3)
   output$forcelasso <- renderForceNetwork({
-    FORCE()
-  })
-  
-  FORCE<- function(){
-    # v <- reactiveValues(data = NULL)
-    if(input$raw==FALSE){
-      wee<-paste(input$data,"dataMYCsign",sep="")
-      datum<-ddd[[wee]]}else{
-        # }else if(input$demo4==TRUE){
-        inFile <- input$file1
-        if (is.null(inFile))
-          return(NULL)
-        datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-      }
+    edge_list <- processed_edge_list()
+    if (is.null(edge_list)) return(NULL)
     
-    edgeList<-datum[[input$sparsity]][1:6]
-    colnames(edgeList) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-    if(input$self==FALSE){
-      edgeList<-edgeList%>%filter_(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+    # Rename for D3 compatibility logic
+    colnames(edge_list) <- c("SourceName", "TargetName", "Link", "Link2", "Sign", "Weight")
+    
+    gD <- igraph::simplify(igraph::graph.data.frame(edge_list, directed = TRUE))
+    node_list <- data.frame(ID = c(0:(igraph::vcount(gD) - 1)), nName = igraph::V(gD)$name)
+    
+    get_node_id <- function(x) { match(x, igraph::V(gD)$name) - 1 }
+    
+    edge_list_d3 <- edge_list %>%
+      mutate(SourceID = get_node_id(SourceName),
+             TargetID = get_node_id(TargetName))
+    
+    node_list$nodeDegree <- igraph::degree(gD, mode = "all")
+    bet_all <- igraph::betweenness(gD, directed = FALSE)
+    
+    # Normalize betweenness for node size
+    bet_norm <- if (max(bet_all) != min(bet_all)) {
+      (bet_all - min(bet_all)) / (max(bet_all) - min(bet_all))
+    } else {
+      rep(0, length(bet_all))
     }
+    node_list$nodeBetweenness <- 100 * bet_norm
     
-    gD<-simplify(graph.data.frame(edgeList,directed=TRUE))
-    nodeList <- data.frame(ID = c(0:(igraph::vcount(gD) - 1)),nName = igraph::V(gD)$name)
-    getNodeID <- function(x){which(x == igraph::V(gD)$name) - 1}
+    # Color mapping based on weights
+    f2 <- colorRampPalette(c("#0000FF", "#FF0000"), space = "rgb", interpolate = "linear")
+    col_codes <- f2(length(unique(edge_list$Weight)))
+    edges_col <- sapply(edge_list$Weight, function(x) col_codes[which(sort(unique(edge_list$Weight)) == x)])
     
-    edgeList <- plyr::ddply(edgeList, .variables = c("SourceName", "TargetName", "Weight"), 
-                            function (x) data.frame(SourceID = getNodeID(x$SourceName), 
-                                                    TargetID = getNodeID(x$TargetName)))
-    nodeList <- cbind(nodeList, nodeDegree=igraph::degree(gD, v = igraph::V(gD), mode = "all"))
-    betAll <- igraph::betweenness(gD, v = igraph::V(gD), directed = FALSE) / (((igraph::vcount(gD) - 1) * (igraph::vcount(gD)-2)) / 2)
-    betAll.norm <- (betAll - min(betAll))/(max(betAll) - min(betAll))
-    nodeList <- cbind(nodeList, nodeBetweenness=100*betAll.norm) # We are scaling the value by multiplying it by 100 for visualization purposes only (to create larger nodes)
-    rm(betAll, betAll.norm)
-    
-    dsAll <- igraph::similarity.dice(gD, vids = igraph::V(gD), mode = "all")
-    
-    F1 <- function(x) {data.frame(diceSim = dsAll[x$SourceID +1, x$TargetID + 1])}
-    edgeList <- plyr::ddply(edgeList, .variables=c("SourceName", "TargetName", "Weight", "SourceID", "TargetID"), 
-                            function(x) data.frame(F1(x)))
-    
-    rm(dsAll, F1, getNodeID, gD)
-    
-    F2 <- colorRampPalette(c("#0000FF", "#FF0000"), bias = nrow(edgeList), space = "rgb", interpolate = "linear")
-    colCodes <- F2(length(unique(edgeList$Weight)))
-    edges_col <- sapply(edgeList$Weight, function(x) colCodes[which(sort(unique(edgeList$Weight)) == x)])
-    
-    rm(colCodes, F2)
-    ############################################################################################
-    # Let's create a network
-    # with a simple click action - make the circles bigger when clicked
-    MyClickScript <- 
-      '      d3.select(this).select("circle").transition()
-    .duration(750)
-    .attr("r", 30)'
-    D3_network_LM <- networkD3::forceNetwork(Links = edgeList, # data frame that contains info about edges
-                                  Nodes = nodeList, # data frame that contains info about nodes
-                                  Source = "SourceID", # ID of source node 
-                                  Target = "TargetID", # ID of target node
-                                  Value = "Weight", # value from the edge list (data frame) that will be used to value/weight relationship amongst nodes
-                                  NodeID = "nName", # value from the node list (data frame) that contains node description we want to use (e.g., node name)
-                                  Nodesize = "nodeBetweenness",  # value from the node list (data frame) that contains value we want to use for a node size
-                                  Group = "nodeDegree",  # value from the node list (data frame) that contains value we want to use for node color
-                                  height = 500, # Size of the plot (vertical)
-                                  width = 1000,  # Size of the plot (horizontal)
-                                  fontSize = 15, # Font size
-                                  linkDistance = networkD3::JS("function(d) { return 100*d.value; }"), 
-                                  linkWidth = networkD3::JS("function(d) { return 2*d.value; }"),
-                                  opacity = 0.85, # opacity
-                                  zoom = TRUE, # ability to zoom when click on the node
-                                  opacityNoHover = 0.1, # opacity of labels when static
-                                  legend=FALSE,arrows=TRUE,
-                                  linkColour = edges_col, bounded=FALSE #clickAction = MyClickScript
-    ) # edge colors
-    D3_network_LM
-    
-  }
-  
-  output$vizNet <- renderVisNetwork({
-    # nodes <- data.frame(id = 1:3)
-    # edges <- data.frame(from = c(1,2), to = c(1,3))
-    
-    wee<-paste("lassodataMYCsign")
-    datum<-ddd[[wee]]
-    
-    edges<-datum[[input$sparsity]][1:3]
-    colnames(edges) <- c("from", "to","width")#,"Link2","Sign", "Weight")
-    
-    gD<-simplify(graph.data.frame(edges,directed=TRUE))
-    nodes <- data.frame(ID = c(0:(igraph::vcount(gD) - 1)),nName = igraph::V(gD)$name)
-    getNodeID <- function(x){which(x == igraph::V(gD)$name) - 1}
-    
-    edges <- plyr::ddply(edges, .variables = c("from", "to", "width"), 
-                         function (x) data.frame(SourceID = getNodeID(x$from), 
-                                                 TargetID = getNodeID(x$to)))
-    nodes <- cbind(nodes, nodeDegree=igraph::degree(gD, v = igraph::V(gD), mode = "all"))
-    betAll <- igraph::betweenness(gD, v = igraph::V(gD), directed = FALSE) / (((igraph::vcount(gD) - 1) * (igraph::vcount(gD)-2)) / 2)
-    betAll.norm <- (betAll - min(betAll))/(max(betAll) - min(betAll))
-    nodes <- cbind(nodes, nodeBetweenness=100*betAll.norm) # We are scaling the value by multiplying it by 100 for visualization purposes only (to create larger nodes)
-    rm(betAll, betAll.norm)
-    colnames(nodes) <- c("id", "label","group","font.size")#,"Sign", "Weight")
-    dsAll <- igraph::similarity.dice(gD, vids = igraph::V(gD), mode = "all")
-    
-    F1 <- function(x) {data.frame(diceSim = dsAll[x$SourceID +1, x$TargetID + 1])}
-    edges <- plyr::ddply(edges, .variables=c("from", "to", "width", "SourceID", "TargetID"), 
-                         function(x) data.frame(F1(x)))
-    
-    rm(dsAll, F1, getNodeID, gD)
-    
-    F2 <- colorRampPalette(c("#0000FF", "#FF0000"), bias = nrow(nodes), space = "rgb", interpolate = "linear")
-    colCodes <- F2(length(unique(edges$diceSim)))
-    edges_col <- sapply(edges$Weight, function(x) colCodes[which(sort(unique(edges$Weight)) == x)])
-    colnames(edges) <- c("label", "too","width","from","to", "Weight")
-    rm(colCodes, F2)
-    
-    visNetwork(nodes, edges,width="100%") %>% visLegend() %>%
-      # viNodes(label=NULL)
-      visEdges(shadow = FALSE,
-               arrows ="from",#edges$from, list(to = list(enabled = TRUE, scaleFactor = 2)),
-               color = list(color = "lightblue", highlight = "red")) %>%
-      visLayout(randomSeed = 12) %>% # to have always the same network
-      visOptions(manipulation = TRUE)%>%
-      visClusteringByColor(colors=c("red") ) %>%
-      visClusteringByGroup(groups )
-  })
-  output$text1 <- renderPrint({ 
-    if(input$raw==FALSE){
-      qee<-paste(input$data,"nameMYCsign",sep="")
-      fff[[qee]][[input$sparsity]]}else{validate(
-        need(input$raw == FALSE, "cannot (yet) display multiple GRN names."))
-        # inFile <- input$file1
-        # if (is.null(inFile))
-        #   return(NULL)
-        # # aa <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-        # inFile$name[[input$sparsity]]
-      }
-    # invisible()
-    
+    networkD3::forceNetwork(
+      Links = edge_list_d3,
+      Nodes = node_list,
+      Source = "SourceID",
+      Target = "TargetID",
+      Value = "Weight",
+      NodeID = "nName",
+      Nodesize = "nodeBetweenness",
+      Group = "nodeDegree",
+      height = 500,
+      width = 1000,
+      fontSize = 15,
+      linkDistance = networkD3::JS("function(d) { return 100*d.value; }"),
+      linkWidth = networkD3::JS("function(d) { return 2*d.value; }"),
+      opacity = 0.85,
+      zoom = TRUE,
+      opacityNoHover = 0.1,
+      legend = FALSE,
+      arrows = TRUE,
+      linkColour = edges_col,
+      bounded = FALSE
+    )
   })
   
-  output$text2 <- renderPrint({ 
-    if(input$raw==FALSE){
-      wee<-paste(input$data,"dataMYCsign",sep="")
-      datum<-ddd[[wee]]}else{validate(
-        need(input$raw == FALSE, "cannot (yet) analyze multiple GRN."))
-        # }else if(input$demo4==TRUE){
-        # inFile <- input$file1
-        # if (is.null(inFile))
-        #   return(NULL)
-        # datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-      }
-       
-    # dd<-data.frame(datum[input$sparsity])
-
-    net1<-data.frame(datum[input$sparsity],stringsAsFactors = FALSE)
-    # net1<-data.frame(net1)
-    names(net1) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-    if(input$self==FALSE){
-      net1<-net1%>%filter_(~as.character(SourceName)!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
+  # Output: Cytoscape (cyjShiny)
+  output$cyjShiny <- renderCyjShiny({
+    edge_data <- processed_edge_list()
+    if (is.null(edge_data)) return(NULL)
+    
+    # Prepare for Cytoscape - ensure all columns are character/numeric, not factors
+    colnames(edge_data) <- c("sourceName", "targetName", "link1", "link2", "link", "weight")
+    
+    # Convert factors to characters and ensure numeric columns
+    edge_data$sourceName <- as.character(edge_data$sourceName)
+    edge_data$targetName <- as.character(edge_data$targetName)
+    edge_data$link1 <- as.numeric(edge_data$link1)
+    edge_data$weight <- as.numeric(edge_data$weight)
+    
+    edge_data$edgeTargetShape <- ifelse(edge_data$link1 == -1, "tee", 
+                                        ifelse(edge_data$link1 == 1, "triangle", "triangle"))
+    edge_data$color <- ifelse(edge_data$link1 == -1, "#FF0000", 
+                              ifelse(edge_data$link1 == 1, "#0000FF", "#888888"))
+    
+    # Build graph
+    gD <- igraph::simplify(igraph::graph.data.frame(edge_data[, c("sourceName", "targetName")], directed = TRUE))
+    
+    # Create node list
+    node_names <- igraph::V(gD)$name
+    node_data <- data.frame(
+      id = node_names,
+      name = node_names,
+      stringsAsFactors = FALSE
+    )
+    
+    # Calculate node properties
+    node_data$nodeDegree <- igraph::degree(gD, mode = "all")
+    node_data$rank <- if(max(node_data$nodeDegree) > 0) {
+      node_data$nodeDegree / max(node_data$nodeDegree)
+    } else {
+      rep(0.5, nrow(node_data))
     }
-    # net2<-net1
-    net1<-network(net1[1:2],directed=TRUE,loops=TRUE)
+    node_data$shape <- "ellipse"
     
-    c(cat("N(odes):",network.size(net1),"\n"),cat("L(inks):",network.edgecount(net1),"\n"),cat("Sparsity:",network.edgecount(net1)/network.size(net1),"L/N"))
-    invisible()
+    # Create edge list with proper node references
+    edge_list <- data.frame(
+      source = as.character(edge_data$sourceName),
+      target = as.character(edge_data$targetName),
+      weight = as.numeric(edge_data$weight),
+      color = as.character(edge_data$color),
+      targetShape = as.character(edge_data$edgeTargetShape),
+      interaction = ifelse(edge_data$edgeTargetShape == "tee", "inhibit", "stimulate"),
+      stringsAsFactors = FALSE
+    )
+    
+    # Create the graph JSON
+    graph_json <- toJSON(dataFramesToJSON(edge_list, node_data), auto_unbox = TRUE)
+    
+    # Define style directly as JSON string (matching user's request)
+    cy_style_json <- '[
+       {"selector":"node", "css": {
+           "text-valign":"center",
+           "text-halign":"center",
+           "border-color": "black",
+           "content": "data(name)",
+           "border-width": "1px",
+           "font-size":"10px",
+           "width": "40px",
+           "height": "40px"
+           }},
+        {"selector": "node[rank>0]", "css": {
+            "background-color": "mapData(rank, 0, 1, white,cyan)"
+        }},
+        {"selector": "node:selected", "css": {
+           "overlay-opacity": 0.3,
+           "overlay-color": "gray"
+        }},
+        {"selector": "edge", "css": {
+            "curve-style": "bezier"
+        }},
+        {"selector": "edge[interaction=\'stimulate\']", "css": {
+            "line-color": "blue",
+            "width": 1,
+            "target-arrow-shape": "triangle",
+            "target-arrow-color": "blue",
+            "arrow-scale": 1
+        }},
+        {"selector": "edge[interaction=\'inhibit\']", "css": {
+            "line-color": "red",
+            "width": 1,
+            "target-arrow-shape": "tee",
+            "target-arrow-color": "red",
+            "arrow-scale": 1
+          }}
+    ]'
+    
+    # Write style to a temporary file
+    style_file <- tempfile(pattern = "cy_style", fileext = ".js")
+    write(cy_style_json, style_file)
+    
+    cyjShiny(graph_json, layoutName = input$clay, styleFile = style_file)
   })
   
-  output$CytoscapeJS <-renderRcytoscapejs({
-    if(input$raw==FALSE){
-      wee<-paste(input$data,"dataMYCsign",sep="")
-      datum<-ddd[[wee]]
-      # datum<-lapply(datum, function(df){df[order(size(df,2)),]})
-    }else{
-      # }else if(input$demo4==TRUE){
-      inFile <- input$file1
-      if (is.null(inFile))
-        return(NULL)
-      datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-    }
-    
-    edgeData<-datum[[input$sparsity]][1:6]
-    colnames(edgeData) <- c("sourceName", "targetName","link1","link2","link", "weight")
-    if(input$self==FALSE){
-      edgeData<-edgeData%>%filter_(~as.character(sourceName)!=as.character(targetName))####REMOVE SELF LINKS -- works on test network file
-    }
-    
-    
-    edgeData$edgeTargetShape<-edgeData$link1
-    edgeData$edgeTargetShape<-gsub(-1,"tee",edgeData$edgeTargetShape)
-    edgeData$edgeTargetShape<-gsub(1,"triangle",edgeData$edgeTargetShape)
-    # edgeData$edgeSourceShape<-edgeData$edgeTargetShape
-    
-    edgeData$color<-edgeData$link1
-    edgeData$color<-gsub(-1,"#FF0000",edgeData$color)
-    edgeData$color<-gsub(1,"#0000FF",edgeData$color)
-    
-    gD<-simplify(graph.data.frame(edgeData,directed=TRUE))
-    nodeData <- data.frame(id = c(0:(igraph::vcount(gD) - 1)),name = igraph::V(gD)$name)
-    getNodeID <- function(x){which(x == igraph::V(gD)$name) - 1}
-    
-    edgeData <- plyr::ddply(edgeData, .variables = c("sourceName", "targetName", "weight","color","edgeTargetShape"),
-                            function (x) data.frame(source = getNodeID(x$source),
-                                                    target = getNodeID(x$target)))
-    edgeData$targetShape<-edgeData$edgeTargetShape
-    edgeData$targetShape<-edgeData$edgeTargetShape
-    
-    nodeData$shape <- "ellipse"
-    # nodeData$selector<-"green"
-    nodeData <- cbind(nodeData, nodeDegree=igraph::degree(gD, v = igraph::V(gD), mode = "all"))
-    
-    network <- createCytoscapeJsNetwork(nodeData, edgeData)
-    rcytoscapejs(network$nodes, network$edges, layout=input$clay)
-    
-  })
-  
+  # Output: Overlap Plot (Plotly)
   output$overlapPLOT <- renderPlotly({
-    
-    
-    
-    if(input$raw==FALSE){
-      wee<-paste(input$data,"MYCsignlinkplotdata",sep="")#paste("lassodataMYCsign")
-      datum<-eee[[wee]]
-      data<-(datum[[input$sparsity]])
-      zee<-paste(input$data,"MYCsignlinkcutdata",sep="")#paste("lassodataMYCsign")
-      cutoffs<-ggg[[zee]]
-      qee<-paste(input$data,"nameMYCsign",sep="")#paste("lassodataMYCsign")
-      aa<-fff[[qee]][[input$sparsity]]
-      if(identical(input$data,"tlsco")){validate( need(input$data != "tlsco", "not available"))}
-    }else{validate( need(input$raw == FALSE, "cannot (yet) analyze uploaded GRN overlap"))
-        # inFile <- input$file2
-        # if (is.null(inFile))
-        #   return(NULL)
-        # datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep2,comment="#")
-        # data<-(datum[[input$sparsity]])
-        # cutoffs<-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep2,skip=dim(data[[1]])[1]-3,comment="#")
-        # # data[(dim(lassoMYCsignlinkplotdata[[1]])[1]-2):dim(lassoMYCsignlinkplotdata[[1]])[1],]
-        # # cutoffs[1]<-NULL
-        # # colnames(cutoffs)<-cutoffs[1,]
-        # 
-        # aa <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep2)
-        # # cutoffs<-datum
-        # # datum<-wee
-      }
-    
-    # data<-(datum[[input$sparsity]])
-    # if ((identical(input$data, "MYCsign" )) )
-    if(input$raw==FALSE){
-      data[1:(dim(data)[1]-3),11]<-(as.numeric(as.character(data[1:(dim(data)[1]-3),9]))+(max(as.numeric(as.character(data[1:(dim(data)[1]-3),6])))-max(as.numeric(as.character(data[1:(dim(data)[1]-3),9])))))
-      # data[1:(dim(data)[1]-3),11]<-scale(as.numeric(data[1:(dim(data)[1]-3),6]),center=F,scale=(0,max(as.numeric(data[1:(dim(data)[1]-3),9])))
-      colnames(data)[colnames(data)=="V11"] <- "overlap_MYC"
-      # data<-data.frame(data[1:(dim(data)[1]-3),c(2,7,8,6,11)])
-      data<-data.frame(data[1:(dim(data)[1]-3),c(2,3,4,6,5)])
-      }else{
-      data<-data.frame(data[1:(dim(data)[1]-3),c(2,3,4,6,5)])
-      colnames(data)<-c("bins","Data","shuffle","overlap","overlap_shuffle")
-      cutoff<-(cutoffs[[input$sparsity]])
-      cutoff<-data.frame(cutoffs)
-      colnames(cutoff)<-c("","yrange","sparsity","","","","","","","support at cross","support at cross2")
+    if (input$raw == TRUE) {
+      return(NULL)
+    }
+    if (input$data == "tlsco") {
+      validate(need(FALSE, "Not available for TLSCO"))
     }
     
-    # if(input$demo==TRUE){
-    #   zee<-paste("lassoMYCsignlinkcutdata")#paste("lassodataMYCsign")
-    #   
-    #   cutoffs<-ggg[[zee]]}else{
-    #     inFile <- input$file1
-    #     if (is.null(inFile))
-    #       return(NULL)
-    #     cutoffs <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-    #     cutoffs[(dim(lassoMYCsignlinkplotdata[[1]])[1]-3):dim(lassoMYCsignlinkplotdata[[1]])[1],]
-    #     # cutoffs<-wee
-    #   }
+    idx <- as.numeric(input$sparsity)
+    plot_data_raw <- plot_data_map[[input$data]][[idx]]
+    cutoffs_raw <- cutoff_data_map[[input$data]][[idx]]
     
-    cutoff<-(cutoffs[[input$sparsity]])
-    cutoff<-data.frame(cutoffs)
-    long <- melt(data, id.vars = c("bins"))
-    long$bins<-as.numeric(long$bins)
-    long$value<-as.numeric(long$value)
-    intercept1=cutoff$support.at.cross2[2]
+    if (is.null(plot_data_raw)) return(NULL)
     
-    # if(input$demo==TRUE){
-    #   qee<-paste("lassonameMYCsign")#paste("lassodataMYCsign")
-    #   aa<-fff[[qee]][[input$sparsity]]}else{
-    #     inFile <- input$file1
-    #     if (is.null(inFile))
-    #       return(NULL)
-    #     aa <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-    #     # datum<-wee
-    #   }
+    # Data Processing
+    data_df <- as.data.frame(plot_data_raw)
+    n_rows <- nrow(data_df)
+    subset_idx <- 1:(n_rows - 3)
     
-    # aa<-fff[[qee]][[input$sparsity]]
-    bb<-strsplit(aa,"_")
-    cc<-sapply(bb,"[[",5)
+    # Calculate Overlap MYC (Column 11 logic from original code)
+    val_col9 <- as.numeric(as.character(data_df[subset_idx, 9]))
+    val_col6 <- as.numeric(as.character(data_df[subset_idx, 6]))
+    data_df[subset_idx, 11] <- val_col9 + (max(val_col6) - max(val_col9))
     
+    plot_df <- data_df[subset_idx, c(2, 3, 4, 6, 5)]
+    colnames(plot_df) <- c("bins", "Data", "shuffle", "overlap", "overlap_shuffle")
     
+    # Ensure all columns are numeric to avoid factor issues
+    plot_df[] <- lapply(plot_df, function(x) as.numeric(as.character(x)))
     
-    if (input$raw==FALSE){
-      cutoff$CUT<-cutoff$support.at.cross
-      dd<-substr(cc,8,nchar(cc))
-      gg=1010
-      ff=10
-      ccc=max(long[c(10:(dim(data)[1]),(dim(data)[1]):(((dim(data)[1])+1)*2)),]$value)
-      hh=(dim(data)[1])
-      ee=(as.numeric(dd))/100
-      
-    # else if(identical(input$data, "BSUB")){
-    #   cutoff$CUT<-(cutoff$support.at.cross)*10
-    #   ccc=max(long[c(1:(dim(data)[1]),(dim(data)[1]+1):(((dim(data)[1])+1)*2)),]$value)
-    #   
-    #   ff=1
-    #   hh=(dim(data)[1])
-    #   gg=(dim(data)[1])+1
-    #   dd<-substr(cc,8,nchar(cc))
-    #   ee=as.numeric(dd)/100
-    # }
-    }else{
-      cutoff$CUT<-(cutoff$support.at.cross)*10
-      ccc=max(long[c(1:(dim(data)[1]),(dim(data)[1]+1):(((dim(data)[1])+1)*2)),]$value)
-      
-      ff=1
-      hh=(dim(data)[1])
-      gg=(dim(data)[1])+1
-      dd<-substr(cc,5,nchar(cc))
-      # ee=as.numeric(dd)/10
-      ee=as.numeric(cutoff$CUT)
+    cutoff_df <- as.data.frame(cutoffs_raw)
+    
+    long <- melt(plot_df, id.vars = c("bins"))
+    long$bins <- as.numeric(long$bins)
+    long$value <- as.numeric(long$value)
+    
+    # Plotting Parameters
+    # Replicating original logic for scaling and ranges
+    ccc <- max(long$value)
+    hh <- nrow(plot_df)
+    
+    # FDR Calculation
+    a <- vector()
+    b <- vector()
+    
+    # Normalize bins to 0-1 range
+    max_bin <- max(long$bins, na.rm = TRUE)
+    
+    for (i in 1:hh) {
+      a[i] <- trapz(long$bins[i:hh]/max_bin, long$value[i:hh]/max(long$value[i:hh]))
+      b[i] <- trapz(long$bins[c(((hh+1)+i):(hh*2))]/max_bin, long$value[c(((hh+1)+i):(hh*2))]/max(long$value[c(i:(dim(plot_df)[1]))]))
     }
+    
+    fdr_x_vals <- c(1:(dim(plot_df)[1]))/(dim(plot_df)[1])
+    fdr_y_vals <- na.locf(b/a)/3
+    fdr_cutoff_x <- approx(x = fdr_y_vals, y = fdr_x_vals, xout = 0.05, rule = 2)$y
+    
+    # Simplified Plotly construction
     ay <- list(
       tickfont = list(color = "black"),
       overlaying = "y",
@@ -466,264 +412,159 @@ server <- function(input, output) {
       showline = FALSE,
       showgrid = FALSE
     )
-    a<-vector()
-    b<-vector()
-    for (i in 1:(dim(data)[1])){
-      a[i]<-trapz(long$bins[c(i:(dim(data)[1]))]/(dim(data)[1]), long$value[c(i:(dim(data)[1]))]/max(long$value[c(i:(dim(data)[1]))]))
-      b[i]<-trapz(long$bins[c(((hh+1)+i):(hh*2))]/(dim(data)[1]), long$value[c(((hh+1)+i):(hh*2))]/max(long$value[c(i:(dim(data)[1]))]))
-    }
-    # ab<-((1002-(length(na.omit(b/a)))))
-    fdr_x_vals <- c(1:(dim(data)[1]))/(dim(data)[1])
-    fdr_y_vals <- na.locf(b/a)/3
-    fdr_cutoff_x <- approx(x = fdr_y_vals, y = fdr_x_vals, xout = 0.05, rule = 2)$y
-    ww<-plot_ly() %>%
-      add_lines(x = long$bins[c(ff:(dim(data)[1]))]/(dim(data)[1]), y = (long$value[c(ff:(dim(data)[1]))]/max(long$value[c(ff:(dim(data)[1]))])), name = "Measured",line = list(color = 'rgb(22, 96, 167)')) %>%
-      add_lines(x = long$bins[c(gg:(hh*2))]/(dim(data)[1]), y = (long$value[c(gg:(hh*2))]/max(long$value[c(ff:(dim(data)[1]))])), name = "Shuffled", line = list(color = 'rgb(205, 12, 24)'))%>%
-      add_lines(x = long$bins[(1+hh*3):(hh*4)]/(dim(data)[1]), y = (long$value[(1+hh*3):(hh*4)]/max(long$value[(1+hh*3):(hh*4)]))*ccc, name = "Overlap, Measured", yaxis = "y2",fill = 'tozeroy',line = list(color = 'rgba(55, 15, 255,0.1)'),fillcolor = list(color = 'rgba(55, 15, 255,0.01)')) %>%
-      add_lines(x = long$bins[(1+hh*2):(hh*3)]/(dim(data)[1]), y = (long$value[(1+hh*2):(hh*3)]/max(long$value[(1+hh*2):(hh*3)]))*ccc, name = "Overlap, Shuffled", yaxis = "y2",fill = 'tozeroy',line = list(color = 'rgba(207, 114, 129,0.1)'),fillcolor = list(color = 'rgba(207, 114, 129,0.01)')) %>%
-      # add_lines(x=c(1:(length(na.omit(b/a)))/(dim(data)[1])),y=na.omit(b/a), name = "FDR",line = list(color = 'grey',dash = "dash")) %>%
+    
+    ff=10
+    gg=1010
+    
+    plot_ly() %>%
+      add_lines(x = long$bins[c(ff:(dim(plot_df)[1]))]/max_bin, y = (long$value[c(ff:(dim(plot_df)[1]))]/max(long$value[c(ff:(dim(plot_df)[1]))])), name = "Measured",line = list(color = 'rgb(22, 96, 167)')) %>%
+      add_lines(x = long$bins[c(gg:(hh*2))]/max_bin, y = (long$value[c(gg:(hh*2))]/max(long$value[c(ff:(dim(plot_df)[1]))])), name = "Shuffled", line = list(color = 'rgb(205, 12, 24)'))%>%
+      add_lines(x = long$bins[(1+hh*3):(hh*4)]/max_bin, y = (long$value[(1+hh*3):(hh*4)]/max(long$value[(1+hh*3):(hh*4)]))*ccc, name = "Overlap, Measured", yaxis = "y2",fill = 'tozeroy',line = list(color = 'rgba(55, 15, 255,0.1)'),fillcolor = list(color = 'rgba(55, 15, 255,0.01)')) %>%
+      add_lines(x = long$bins[(1+hh*2):(hh*3)]/max_bin, y = (long$value[(1+hh*2):(hh*3)]/max(long$value[(1+hh*2):(hh*3)]))*ccc, name = "Overlap, Shuffled", yaxis = "y2",fill = 'tozeroy',line = list(color = 'rgba(207, 114, 129,0.1)'),fillcolor = list(color = 'rgba(207, 114, 129,0.01)')) %>%
       add_lines(x=fdr_x_vals, y=fdr_y_vals, name = "FDR",line = list(color = 'grey',dash = "dash")) %>%
       add_trace(x = fdr_cutoff_x, y = c(0,1),line = list(dash = "dash",color = "orange"),type='scatter',mode='lines',name="support at cutoff") %>%
-      # add_trace(x = (cutoff$CUT[1])-.02, y = c(0,1),line = list(dash = "dash",color = "orange"),type='scatter',mode='lines',name="support at cutoff") %>%
       layout(margin = list(l=100, r=50, b=50, t=50, pad=0),
              paper_bgcolor='rgba(0,0,0,0)',
              plot_bgcolor='rgba(0,0,0,0)',
              yaxis2 = ay,yaxis=list(range=c(0,1),title="Overlap",showline = FALSE,showgrid = FALSE), 
-             xaxis = list(title="Support", y = 0.05,showline = FALSE,showgrid = FALSE),
+             xaxis = list(title="Support", range=c(0,1), y = 0.05,showline = FALSE,showgrid = FALSE),
              legend = list(x = 0.1, y = -0.2,orientation = 'h')
       )
-    
-    
   })
   
-  
-  
+  # Output: Jaccard Similarity Dendrogram
   output$jaccard <- renderPlot({
-    
-    if(input$raw==FALSE){validate(
-      need(input$raw == TRUE, "please upload multiple, preferably dissimilar GRN."))
-      # wee<-paste(input$data,"dataMYCsign",sep="")#paste("lassodataMYCsign")
-      # datum<-ddd[[wee]]
-      # # data<-(datum[[input$sparsity]])
-      # # zee<-paste(input$data,"MYCsignlinkcutdata",sep="")#paste("lassodataMYCsign")
-      # # cutoffs<-ggg[[zee]]
-      # qee<-paste(input$data,"nameMYCsign",sep="")#paste("lassodataMYCsign")
-      # cellline<-fff[[qee]]#[[input$sparsity]]
-    }else{
-      inFile <- input$file1
-      if (is.null(inFile))
-        return(NULL)
-      datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-      cellline<-inFile$name
+    if (input$raw == FALSE) {
+      validate(need(FALSE, "Please upload multiple, preferably dissimilar GRN."))
     }
     
-    JAKS<-matrix(0,length(cellline),length(cellline))
-    if(input$FL==0){
-      jj<-strsplit(cellline,"_")
-      cellline<-sapply(jj,"[[",1)}else{}
-    rownames(JAKS)<-cellline
-    colnames(JAKS)<-cellline
+    data_set <- current_network_set()
+    if (is.null(data_set)) return(NULL)
     
+    jaccard_mat <- NetworkManager$calculate_jaccard_matrix(data_set, input$self == FALSE)
     
-    for(i in 1:length(cellline)){
-      # myFiles<-datum
-      
-      # net1<-datum[i]
-      
-      net1<-datum[i]#[[input$sparsity]][1:6]
-      net1<-data.frame(net1)
-      names(net1) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-      if(input$self==FALSE){
-        net1<-net1%>%filter_(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
-      }
-      
-      for(k in 1:length(cellline)){
-        # net2<-datum[k]
-        net2<-datum[k]#[[input$sparsity]][1:6]
-        net2<-data.frame(net2)
-        
-        names(net2) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-        if(input$self==FALSE){
-          net2<-net2%>%filter_(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
-        }
-        a<-intersect(net1,net2)
-        b<-union(net1,net2)
-        JSim<-dim(a)[1]/dim(b)[1]
-        JAKS[i,k]<-JSim
-        # diag(JAKS)<-0
-      }}
-    # if(input$SIM==0){
-    # c<-upgma(as.matrix(JAKS),method=input$uplay)}else{
-    if (input$root==FALSE){jj<-'none'}else{jj<-FALSE}
-    c<-upgma(as.matrix(1-JAKS),method=input$uplay)#}
-    ggtree(c,layout=input$dendlay,branch.length=jj)+ geom_tiplab(size=6, color="black")#+ geom_nodepoint(color="red", alpha=1/4, size=10)#+geom_text(aes(x=c,label=round(c$edge.length, digits=2)))#,frame="none", adj=c(.5, -.75)))
-    # plot(c)
-    # edgelabels(round(c$edge.length, digits=2),frame="none", adj=c(.5, -.75))
+    cell_lines <- names(data_set)
     
+    # Fallback if names are missing (e.g. pre-loaded data might not have names on the list)
+    if (is.null(cell_lines) && input$raw == FALSE) {
+       cell_lines <- network_names_map[[input$data]]
+    }
     
+    # Final fallback
+    if (is.null(cell_lines)) {
+      cell_lines <- paste0("Net_", 1:length(data_set))
+    }
+    
+    # Ensure character vector
+    cell_lines <- as.character(cell_lines)
+    
+    # Try to extract zetavecs (sparsity) values
+    if (any(grepl("zetavecs[0-9]+", cell_lines))) {
+       cell_lines <- sub(".*zetavecs([0-9]+).*", "\\1", cell_lines)
+    } else if (any(grepl("_", cell_lines))) {
+      cell_lines <- sapply(strsplit(cell_lines, "_"), "[[", 1)
+    }
+    
+    # Fallback: If labels are not unique (e.g. all "bolasso"), use 1-N
+    if (length(unique(cell_lines)) < length(cell_lines)) {
+       cell_lines <- as.character(1:length(cell_lines))
+    }
+    
+    rownames(jaccard_mat) <- cell_lines
+    colnames(jaccard_mat) <- cell_lines
+    
+    dist_mat <- as.dist(1 - jaccard_mat)
+    
+    # Use hclust with default "average" method
+    hc <- hclust(dist_mat, method = "average")
+    
+    plot(hc, main = "Jaccard Similarity Dendrogram", xlab = "Networks", sub = "")
   })
   
+  # Output: Jaccard Table
   output$JacTable <- renderTable({
+    if (input$raw == FALSE) return(NULL)
     
-    if(input$raw==FALSE){validate(
-      need(input$raw == TRUE, "please upload multiple, preferably dissimilar GRN."))
-      # wee<-paste(input$data,"dataMYCsign",sep="")#paste("lassodataMYCsign")
-      # datum<-ddd[[wee]]
-      # # data<-(datum[[input$sparsity]])
-      # # zee<-paste(input$data,"MYCsignlinkcutdata",sep="")#paste("lassodataMYCsign")
-      # # cutoffs<-ggg[[zee]]
-      # qee<-paste(input$data,"nameMYCsign",sep="")#paste("lassodataMYCsign")
-      # cellline<-fff[[qee]]#[[input$sparsity]]
-    }else{
-      inFile <- input$file1
-      if (is.null(inFile))
-        return(NULL)
-      datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-      cellline<-inFile$name
+    data_set <- current_network_set()
+    if (is.null(data_set)) return(NULL)
+    
+    jaccard_mat <- NetworkManager$calculate_jaccard_matrix(data_set, input$self == FALSE)
+    
+    cell_lines <- names(data_set)
+    
+    # Fallback if names are missing
+    if (is.null(cell_lines) && input$raw == FALSE) {
+       cell_lines <- network_names_map[[input$data]]
     }
     
-    JAKS<-matrix(0,length(cellline),length(cellline))
-    if(input$FL==0){
-      jj<-strsplit(cellline,"_")
-      cellline<-sapply(jj,"[[",1)}else{}
-    rownames(JAKS)<-cellline
-    colnames(JAKS)<-cellline
-    
-    
-    for(i in 1:length(cellline)){
-      # myFiles<-datum
-      
-      # net1<-datum[i]
-      
-      net1<-datum[i]#[[input$sparsity]][1:6]
-      net1<-data.frame(net1)
-      names(net1) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-      if(input$self==FALSE){
-        net1<-net1%>%filter_(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
-      }
-      
-      for(k in 1:length(cellline)){
-        # net2<-datum[k]
-        net2<-datum[k]#[[input$sparsity]][1:6]
-        net2<-data.frame(net2)
-        
-        names(net2) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-        if(input$self==FALSE){
-          net2<-net2%>%filter_(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
-        }
-        a<-intersect(net1,net2)
-        b<-union(net1,net2)
-        JSim<-dim(a)[1]/dim(b)[1]
-        JAKS[i,k]<-JSim
-        # diag(JAKS)<-0
-      }}
-    # if(input$SIM==0){
-    #   c<-upgma(as.matrix(JAKS),method=input$uplay)}else{c<-upgma(as.matrix(1-JAKS),method=input$uplay)}
-    # plot(c)
-    # edgelabels(round(c$edge.length, digits=2),frame="none", adj=c(.5, -.75))
-    # if(input$SIM==0){
-    # if(input$show==TRUE){
-    # JAKS}else{}}else{
-    if(input$show==TRUE){
-      1-JAKS}else{}#}
-    # rownames = TRUE
-    
-  })
-  
-  
-  output$radar <- renderChartJSRadar({
-    
-    if(input$raw==FALSE){validate(
-      need(input$raw == TRUE, "please upload multiple, preferably dissimilar GRN."))
-      # wee<-paste(input$data,"dataMYCsign",sep="")#paste("lassodataMYCsign")
-      # datum<-ddd[[wee]]
-      # # data<-(datum[[input$sparsity]])
-      # # zee<-paste(input$data,"MYCsignlinkcutdata",sep="")#paste("lassodataMYCsign")
-      # # cutoffs<-ggg[[zee]]
-      # qee<-paste(input$data,"nameMYCsign",sep="")#paste("lassodataMYCsign")
-      # cellline<-fff[[qee]]#[[input$sparsity]]
-    }else{
-      inFile <- input$file1
-      if (is.null(inFile))
-        return(NULL)
-      datum <-lapply(rev(mixedsort(inFile$datapath)), read.csv, header=FALSE,sep = input$sep)
-      cellline<-inFile$name
+    if (is.null(cell_lines)) {
+      cell_lines <- paste0("Net_", 1:length(data_set))
     }
     
-    JAKS<-matrix(0,length(cellline),length(cellline))
-    if(input$FL2==0){
-      jj<-strsplit(cellline,"_")
-      cellline<-sapply(jj,"[[",1)}else{}
-    rownames(JAKS)<-cellline
-    colnames(JAKS)<-cellline
+    cell_lines <- as.character(cell_lines)
     
-    for(i in 1:length(cellline)){
-      # myFiles<-datum
-      
-      net1<-datum[i]
-      net1<-data.frame(net1)
-      names(net1) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-      if(input$self==FALSE){
-        net1<-net1%>%filter_(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
-      }
-      for(k in 1:length(cellline)){
-        net2<-datum[k]
-        net2<-data.frame(net2)
-        names(net2) <- c("SourceName", "TargetName","Link","Link2","Sign", "Weight")
-        if(input$self==FALSE){
-          net2<-net2%>%filter_(~SourceName!=as.character(TargetName))####REMOVE SELF LINKS -- works on test network file
-        }
-        a<-intersect(net1,net2)
-        b<-union(net1,net2)
-        JSim<-dim(a)[1]/dim(b)[1]
-        JAKS[i,k]<-JSim
-        # diag(JAKS)<-0
-      }}
-    # if(input$SIM2==1){
-    chartJSRadar(data.frame(1-JAKS),labs=cellline,maxScale = 1,showToolTipLabel=TRUE,showLegend=input$zzz,polyAlpha=.001,scaleStepWidth = .1,scaleStartValue = input$aaa)
-    # }else{    chartJSRadar(data.frame(JAKS),labs=cellline,showToolTipLabel=TRUE,showLegend=input$zzz,polyAlpha=.001,scaleStepWidth = .1,maxScale = 1-input$aaa)
-    # }
+    # Try to extract zetavecs (sparsity) values
+    if (any(grepl("zetavecs[0-9]+", cell_lines))) {
+       cell_lines <- sub(".*zetavecs([0-9]+).*", "\\1", cell_lines)
+    } else if (any(grepl("_", cell_lines))) {
+      cell_lines <- sapply(strsplit(cell_lines, "_"), "[[", 1)
+    }
     
-  })
+    # Fallback: If labels are not unique (e.g. all "bolasso"), use 1-N
+    if (length(unique(cell_lines)) < length(cell_lines)) {
+       cell_lines <- as.character(1:length(cell_lines))
+    }
+    
+    rownames(jaccard_mat) <- cell_lines
+    colnames(jaccard_mat) <- cell_lines
+    
+    return(jaccard_mat) # Return Similarity matrix
+  }, rownames = TRUE)
   
+  # Output: Text Info
+  output$text1 <- renderPrint({
+    if (input$raw == FALSE) {
+      name_list <- network_names_map[[input$data]]
+      idx <- as.numeric(input$sparsity)
+      if (!is.null(name_list) && idx <= length(name_list)) {
+        cat(name_list[[idx]])
+      }
+    } else {
+      cat("Uploaded Data Mode")
+    }
+  })
 }
+
 #### UI ####
-ui <- shinyUI(fluidPage(#theme = shinytheme("united"),
+ui <- fluidPage(
   titlePanel("CancerGRN"),
-  # tabsetPanel(
-  # tabPanel("Upload",
   sidebarLayout(
     sidebarPanel(
-      # actionButton("demo", "LASSO networks"),
-      # actionButton("demo2", "LSCO networks"),
-      radioButtons("data", label="Method",c("LASSO"="lasso", "LSCO"="lsco","TLSCO"="tlsco")),
-      h4("networks inferred in:"),h5("'Perturbation-based gene regulatory network inference to unravel oncogenic mechanisms.'"), tags$a(href="https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE125958", " Raw data: GSE125958",target="_blank"),
-      
-      # actionButton("demo3", "MYC-TLSCO"),
+      radioButtons("data", label = "Method", c("LASSO" = "lasso", "LSCO" = "lsco", "TLSCO" = "tlsco")),
+      h4("Networks inferred in:"),
+      h5("'Perturbation-based gene regulatory network inference to unravel oncogenic mechanisms.'"),
+      tags$a(href = "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE125958", " Raw data: GSE125958", target = "_blank"),
       
       checkboxInput('self', 'Self-Loop', FALSE),
-      # if(input$demo==TRUE){
-      sliderInput("sparsity", "Sparsity",1, min = 1,max=30, step = 1),#max = dim("contents")[[1]][1], 
-      # }else if(input$demo2==TRUE){
-      #   sliderInput("sparsity", "Sparsity",1, min = 1,max=length(lscodataMYCsign), step = 1),#max = dim("contents")[[1]][1], 
-      # }else if(input$demo3==TRUE){
-      #   sliderInput("sparsity", "Sparsity",1, min = 1,max=length(tlscodataMYCsign), step = 1),#max = dim("contents")[[1]][1], 
-      # }else(input$clear==TRUE){
-      #   sliderInput("sparsity", "Sparsity",1, min = 1,max=length(sparsity), step = 1),#max = dim("contents")[[1]][1], 
-      # }
-      verbatimTextOutput("text1"), br(),verbatimTextOutput("text2"),
+      sliderInput("sparsity", "Sparsity", 18, min = 1, max = 30, step = 1),
+      
+      verbatimTextOutput("text1"),
       tags$hr(),
+      
       h4("Other Projects"),
       checkboxInput('raw', 'Upload Data', FALSE),
       
-      # actionButton("reset", "Clear"),
-      fileInput('file1', 'Network file(s) to upload',multiple = TRUE),
-      radioButtons('sep', 'Separator',c(Tab='\t',Comma=','),'\t',inline=T),
-      # tags$hr(),
-      # fileInput('file2', 'Overlap file(s) to upload',multiple = TRUE), ##COMMENT OUT OVERLAP PLOT FOR PUBLICATION RE:SCALE ISSUES
-      # radioButtons('sep2', 'Separator',c(Tab='\t',Comma=','),'\t',inline=T),
+      # Conditional Panel for Upload Settings
+      conditionalPanel(
+        condition = "input.raw == true",
+        fileInput('file1', 'Network file(s) to upload', multiple = TRUE),
+        radioButtons('sep', 'Separator', c(Tab = '\t', Comma = ','), '\t', inline = TRUE)
+      ),
       
-      tags$div(class="header", checked=NA,
+      tags$hr(),
+      tags$div(class = "header",
+               tags$p("Examples for each file type:"),
+               tags$div(class="header", checked=NA,
                tags$p("Examples for each file type:"),
                tags$a(href="https://github.com/dcolinmorgan/NestBoot-Viz/tree/master/L1000_comparison", "L1000_comp,",target="_blank"),
                tags$a(href="https://github.com/dcolinmorgan/NestBoot-Viz/tree/master/L1000NestBoot_Aug2018", "L1000_full,",target="_blank"),
@@ -735,25 +576,45 @@ ui <- shinyUI(fluidPage(#theme = shinytheme("united"),
       tags$div(class="header", checked=NA,
                tags$a(href="https://bitbucket.org/sonnhammergrni/genespider/src/BFECV/%2BMethods/BalanceFitError.m", "Inference code on Bitbucket",target="_blank")),
       tags$div(class="header", checked=NA,
-               tags$a(href="https://github.com/dcolinmorgan/NestBoot-Viz", "Shiny app on Github",target="_blank")),
+               tags$a(href="https://github.com/dcolinmorgan/cancer-grn", "Shiny app on Github",target="_blank")),
+      tags$div(class="header", checked=NA,
+               tags$a(href="https://x.com/dcolinmorgan/", "dev",target="_blank")),
       tags$hr()
+      )
     ),
     mainPanel(
       tabsetPanel(
+        tabPanel("CytoscapeJS", 
+                 h4("Network Visualization (Blue: Up, Red: Down)"), 
+                 tags$hr(), 
+                 selectInput("clay", label = "Layout:", 
+                             c("CoSE" = "cose", "Cola" = "cola", "Concentric" = "concentric", 
+                               "Circle" = "circle", "Breadthfirst" = "breadthfirst", 
+                               "Grid" = "grid", "Random" = 'random', "Preset" = 'preset')), 
+                 cyjShinyOutput("cyjShiny", height = '800px')),
         
-        tabPanel("CytoscapeJS",h4("This tab displays the seleceted GRN where blue links reflect up regulation while red reflect negative down regulation."),tags$hr(),selectInput("clay",label="Layout:",c("CoSE"="cose","Cola"="cola","Concentric"="concentric","Circle"="circle","Dagre"="dagre","Grid"="grid","arbor"="arbor","markov"="cytoscape-markov-cluster")),rcytoscapejsOutput("CytoscapeJS",height='800px')),
-        tabPanel("forceSign",h4("This tab displays the seleceted GRN where node size and color represents overall, degree blue links reflect up regulation while red reflect negative down regulation."),tags$hr(),forceNetworkOutput("forcelasso",height='800px')),
+        tabPanel("ForceSign", 
+                 h4("Force Directed Graph"), 
+                 tags$hr(), 
+                 forceNetworkOutput("forcelasso", height = '800px')),
         
-        tabPanel("overlap",h4("This tab displays the entire bootstrap support range from 0 to 1, as well as overlap between all bootstrap GRNs for measured (blue) and shuffled (red) data. The FDR is estimated via a null background model based on networks inferred from shuffled data. This is done to restrict inclusion of false links by setting FDR e.g. to 5%. The dashed orange line represents the cutoff where this is reached, The dashed grey line shows how the FDR behaves as a function of the bootstrap support."),tags$hr(),plotlyOutput("overlapPLOT"))#,downloadButton('downloadData', 'download'))
-        ,
-        # tabPanel("UPGMA",h4("This tab displays the jaccard distance between uploaded networks in a link by link manner, as a rooted or unrooted tree."),tags$hr(),radioButtons('FL', 'Name',c(First='0',Full='1'),'0',inline=T),checkboxInput('root', 'Root', TRUE),selectInput("uplay",label="Layout:",c("average"="average","single"="single","complete"="complete","ward"="ward","mcquitty"="mcquitty","median"="median","centroid"="centroid")),selectInput("dendlay",label="Layout:",c("daylight"="daylight","circular"="circular","fan"="fan","equal_angle"="equal_angle","salnted"="slanted","rectangular"="rectangular")),plotOutput("jaccard",height='800px',width ='1000px' ),checkboxInput('show', 'ShowTable', FALSE),tableOutput("JacTable")),
-        # tabPanel("radar",h4("This tab displays the jaccard distance between uploaded networks in a link by link manner, as a radar plot where all GRN are compared to one another. Jaccard distances are plotted along intersections with a GRN radar line permeating from the center."),tags$hr(),radioButtons('FL2', 'Name',c(First='0',Full='1'),'0',inline=T),checkboxInput('zzz', 'Labels', FALSE),sliderInput("aaa", "Zoom",0, min = 0,max=1, step = .01),chartJSRadarOutput("radar",height='500px')),
-        tabPanel("raw",downloadButton('downloadData', 'Download'),radioButtons("filetype", "File type:",
-                                                                               choices = c("csv", "tsv")),tableOutput("table"))
-      )))
-  
-  
-))
+        tabPanel("Overlap", 
+                 h4("Bootstrap Support & Overlap"), 
+                 tags$hr(), 
+                 plotlyOutput("overlapPLOT")),
+        
+        tabPanel("Raw Data", 
+                 downloadButton('downloadData', 'Download'), 
+                 radioButtons("filetype", "File type:", choices = c("csv", "tsv")), 
+                 tableOutput("table")),
+                 
+        tabPanel("Jaccard Similarity",
+                 plotOutput("jaccard"),
+                 tableOutput("JacTable"))
+      )
+    )
+  )
+)
 
 #### Run ####
 shinyApp(ui = ui, server = server)
