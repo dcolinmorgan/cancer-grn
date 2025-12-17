@@ -585,7 +585,7 @@ ui <- fluidPage(
     mainPanel(
       tabsetPanel(
         tabPanel("CytoscapeJS", 
-                 h4("Network Visualization (Blue: Up, Red: Down)"), 
+                 h4("This tab displays the seleceted GRN where blue links reflect up regulation while red reflect negative down regulation."), 
                  tags$hr(), 
                  selectInput("clay", label = "Layout:", 
                              c("CoSE" = "cose", "Cola" = "cola", "Concentric" = "concentric", 
@@ -594,12 +594,12 @@ ui <- fluidPage(
                  cyjShinyOutput("cyjShiny", height = '800px')),
         
         tabPanel("ForceSign", 
-                 h4("Force Directed Graph"), 
+                 h4("This tab displays the seleceted GRN where node size and color represents overall, degree blue links reflect up regulation while red reflect negative down regulation."),
                  tags$hr(), 
                  forceNetworkOutput("forcelasso", height = '800px')),
         
         tabPanel("Overlap", 
-                 h4("Bootstrap Support & Overlap"), 
+                 h4("This tab displays the entire bootstrap support range from 0 to 1, as well as overlap between all bootstrap GRNs for measured (blue) and shuffled (red) data. The FDR is estimated via a null background model based on networks inferred from shuffled data. This is done to restrict inclusion of false links by setting FDR e.g. to 5%. The dashed orange line represents the cutoff where this is reached, The dashed grey line shows how the FDR behaves as a function of the bootstrap support."), 
                  tags$hr(), 
                  plotlyOutput("overlapPLOT")),
         

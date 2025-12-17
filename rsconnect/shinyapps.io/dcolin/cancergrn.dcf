@@ -5,7 +5,7 @@ account: dcolin
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 646187
-bundleId: 11330349
+bundleId: 11335922
 url: https://dcolin.shinyapps.io/cancergrn/
 version: 1
 asMultiple: FALSE
