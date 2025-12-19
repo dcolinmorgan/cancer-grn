@@ -12,6 +12,7 @@ library(reshape2)
 library(plotly)
 library(radarchart)
 library(visNetwork)
+library(shinyscreenshot)
 
 # Optional: Load graph if available (Bioconductor dependency often used with graph structures)
 if (requireNamespace("graph", quietly = TRUE)) {
@@ -144,6 +145,31 @@ server <- function(input, output) {
     }
   })
   
+  # Reactive: Get current filename base (without extension)
+  current_filename_base <- reactive({
+    fname <- NULL
+    if (input$raw == FALSE) {
+      name_list <- network_names_map[[input$data]]
+      idx <- as.numeric(input$sparsity)
+      if (!is.null(name_list) && idx <= length(name_list)) {
+        fname <- name_list[[idx]]
+      }
+    } else {
+      # Uploaded data
+      data_set <- current_network_set()
+      idx <- as.numeric(input$sparsity)
+      if (!is.null(data_set) && idx <= length(data_set)) {
+         fname <- names(data_set)[idx]
+      }
+    }
+    
+    if (!is.null(fname)) {
+      return(sub("\\.[^.]*$", "", fname))
+    } else {
+      return(paste0("network_", input$data))
+    }
+  })
+  
   # Reactive: Get the specific single network selected by sparsity/index
   selected_network_raw <- reactive({
     data_set <- current_network_set()
@@ -171,17 +197,7 @@ server <- function(input, output) {
   # Output: Download Data
   output$downloadData <- downloadHandler(
     filename = function() {
-      if (input$raw == FALSE) {
-        name_list <- network_names_map[[input$data]]
-        idx <- as.numeric(input$sparsity)
-        if (!is.null(name_list) && idx <= length(name_list)) {
-          paste(name_list[[idx]], input$filetype, sep = ".")
-        } else {
-          paste("network_data", input$filetype, sep = ".")
-        }
-      } else {
-        paste("network_data", input$filetype, sep = ".")
-      }
+      paste(current_filename_base(), input$filetype, sep = ".")
     },
     content = function(file) {
       sep <- switch(input$filetype, "csv" = ",", "tsv" = "\t")
@@ -189,8 +205,8 @@ server <- function(input, output) {
     }
   )
   
-  # Output: Force Network (D3)
-  output$forcelasso <- renderForceNetwork({
+  # Reactive: Force Network Object
+  force_network_obj <- reactive({
     edge_list <- processed_edge_list()
     if (is.null(edge_list)) return(NULL)
     
@@ -246,8 +262,18 @@ server <- function(input, output) {
     )
   })
   
-  # Output: Cytoscape (cyjShiny)
-  output$cyjShiny <- renderCyjShiny({
+  # Output: Force Network (D3)
+  output$forcelasso <- renderForceNetwork({
+    force_network_obj()
+  })
+  
+  # Capture: Force Network
+  observeEvent(input$shotForce, {
+    screenshot(selector = "#forcelasso", filename = paste0("force_network_", current_filename_base()))
+  })
+  
+  # Reactive: Cytoscape Object
+  cyj_chart_obj <- reactive({
     edge_data <- processed_edge_list()
     if (is.null(edge_data)) return(NULL)
     
@@ -344,8 +370,18 @@ server <- function(input, output) {
     cyjShiny(graph_json, layoutName = input$clay, styleFile = style_file)
   })
   
-  # Output: Overlap Plot (Plotly)
-  output$overlapPLOT <- renderPlotly({
+  # Output: Cytoscape (cyjShiny)
+  output$cyjShiny <- renderCyjShiny({
+    cyj_chart_obj()
+  })
+  
+  # Capture: Cytoscape
+  observeEvent(input$shotCyj, {
+    screenshot(selector = "#cyjShiny", filename = paste0("cytoscape_network_", current_filename_base()))
+  })
+  
+  # Reactive: Overlap Plot Object
+  overlap_plot_obj <- reactive({
     if (input$raw == TRUE) {
       return(NULL)
     }
@@ -432,12 +468,18 @@ server <- function(input, output) {
       )
   })
   
-  # Output: Jaccard Similarity Dendrogram
-  output$jaccard <- renderPlot({
-    if (input$raw == FALSE) {
-      validate(need(FALSE, "Please upload multiple, preferably dissimilar GRN."))
-    }
-    
+  # Output: Overlap Plot (Plotly)
+  output$overlapPLOT <- renderPlotly({
+    overlap_plot_obj()
+  })
+  
+  # Capture: Overlap Plot
+  observeEvent(input$shotOverlap, {
+    screenshot(selector = "#overlapPLOT", filename = paste0("overlap_plot_", current_filename_base()))
+  })
+  
+  # Function: Jaccard Plot
+  jaccard_plot_func <- function() {
     data_set <- current_network_set()
     if (is.null(data_set)) return(NULL)
     
@@ -479,47 +521,17 @@ server <- function(input, output) {
     hc <- hclust(dist_mat, method = "average")
     
     plot(hc, main = "Jaccard Similarity Dendrogram", xlab = "Networks", sub = "")
+  }
+  
+  # Output: Jaccard Similarity Dendrogram
+  output$jaccard <- renderPlot({
+    jaccard_plot_func()
   })
   
-  # Output: Jaccard Table
-  output$JacTable <- renderTable({
-    if (input$raw == FALSE) return(NULL)
-    
-    data_set <- current_network_set()
-    if (is.null(data_set)) return(NULL)
-    
-    jaccard_mat <- NetworkManager$calculate_jaccard_matrix(data_set, input$self == FALSE)
-    
-    cell_lines <- names(data_set)
-    
-    # Fallback if names are missing
-    if (is.null(cell_lines) && input$raw == FALSE) {
-       cell_lines <- network_names_map[[input$data]]
-    }
-    
-    if (is.null(cell_lines)) {
-      cell_lines <- paste0("Net_", 1:length(data_set))
-    }
-    
-    cell_lines <- as.character(cell_lines)
-    
-    # Try to extract zetavecs (sparsity) values
-    if (any(grepl("zetavecs[0-9]+", cell_lines))) {
-       cell_lines <- sub(".*zetavecs([0-9]+).*", "\\1", cell_lines)
-    } else if (any(grepl("_", cell_lines))) {
-      cell_lines <- sapply(strsplit(cell_lines, "_"), "[[", 1)
-    }
-    
-    # Fallback: If labels are not unique (e.g. all "bolasso"), use 1-N
-    if (length(unique(cell_lines)) < length(cell_lines)) {
-       cell_lines <- as.character(1:length(cell_lines))
-    }
-    
-    rownames(jaccard_mat) <- cell_lines
-    colnames(jaccard_mat) <- cell_lines
-    
-    return(jaccard_mat) # Return Similarity matrix
-  }, rownames = TRUE)
+  # Capture: Jaccard Plot
+  observeEvent(input$shotJaccard, {
+    screenshot(selector = "#jaccard", filename = paste0("jaccard_dendrogram_", input$data))
+  })
   
   # Output: Text Info
   output$text1 <- renderPrint({
@@ -527,7 +539,41 @@ server <- function(input, output) {
       name_list <- network_names_map[[input$data]]
       idx <- as.numeric(input$sparsity)
       if (!is.null(name_list) && idx <= length(name_list)) {
-        cat(name_list[[idx]])
+        filename <- name_list[[idx]]
+        
+        cat(paste0(toupper(input$data), " GRN number ", idx, ".\n"))
+        
+        details <- c()
+        
+        if (grepl("Bolasso", filename)) {
+          details <- c(details, "Nestboot of LASSO")
+        } else if (grepl("Bolsco", filename)) {
+          details <- c(details, "Nestboot of LSCO")
+        } else if (grepl("Botlsco", filename)) {
+          details <- c(details, "Nestboot of TLSCO")
+        }
+        
+        # Extract Penalty (last numeric part before extension)
+        if (grepl("_[0-9.e-]+\\.[a-zA-Z]+$", filename)) {
+          penalty <- sub(".*_([0-9.e-]+)\\.[a-zA-Z]+$", "\\1", filename)
+          details <- c(details, paste0("L1 penalty: ", penalty))
+        }
+        
+        # Extract Links (_Lxxxx_)
+        if (grepl("_L[0-9]+_", filename)) {
+          links <- sub(".*_L([0-9]+)_.*", "\\1", filename)
+          details <- c(details, paste0("Original Links: ", links))
+        }
+        
+        # Extract Experiments (_Mxxx_)
+        if (grepl("_M[0-9]+_", filename)) {
+          experiments <- sub(".*_M([0-9]+)_.*", "\\1", filename)
+          details <- c(details, paste0("Experiments: ", experiments))
+        }
+        
+        if (length(details) > 0) {
+          cat(paste(details, collapse = "\n"))
+        }
       }
     } else {
       cat("Uploaded Data Mode")
@@ -542,13 +588,17 @@ ui <- fluidPage(
     sidebarPanel(
       radioButtons("data", label = "Method", c("LASSO" = "lasso", "LSCO" = "lsco", "TLSCO" = "tlsco")),
       h4("Networks inferred in:"),
-      h5("'Perturbation-based gene regulatory network inference to unravel oncogenic mechanisms.'"),
+      h5(tags$a(href="https://www.nature.com/articles/s41598-020-70941-y", "'Perturbation-based gene regulatory network inference to unravel oncogenic mechanisms.'", target="_blank")),
       tags$a(href = "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE125958", " Raw data: GSE125958", target = "_blank"),
       
       checkboxInput('self', 'Self-Loop', FALSE),
       sliderInput("sparsity", "Sparsity", 18, min = 1, max = 30, step = 1),
       
       verbatimTextOutput("text1"),
+      
+      tags$br(),
+      radioButtons("filetype", "File type:", choices = c("csv", "tsv"), inline = TRUE),
+      downloadButton('downloadData', 'Download Network Data'),
       tags$hr(),
       
       h4("Other Projects"),
@@ -586,6 +636,7 @@ ui <- fluidPage(
       tabsetPanel(
         tabPanel("CytoscapeJS", 
                  h4("This tab displays the seleceted GRN where blue links reflect up regulation while red reflect negative down regulation."), 
+                 actionButton("shotCyj", "Capture PNG"),
                  tags$hr(), 
                  selectInput("clay", label = "Layout:", 
                              c("CoSE" = "cose", "Cola" = "cola", "Concentric" = "concentric", 
@@ -595,22 +646,20 @@ ui <- fluidPage(
         
         tabPanel("ForceSign", 
                  h4("This tab displays the seleceted GRN where node size and color represents overall, degree blue links reflect up regulation while red reflect negative down regulation."),
+                 actionButton("shotForce", "Capture PNG"),
                  tags$hr(), 
                  forceNetworkOutput("forcelasso", height = '800px')),
         
         tabPanel("Overlap", 
                  h4("This tab displays the entire bootstrap support range from 0 to 1, as well as overlap between all bootstrap GRNs for measured (blue) and shuffled (red) data. The FDR is estimated via a null background model based on networks inferred from shuffled data. This is done to restrict inclusion of false links by setting FDR e.g. to 5%. The dashed orange line represents the cutoff where this is reached, The dashed grey line shows how the FDR behaves as a function of the bootstrap support."), 
+                 actionButton("shotOverlap", "Capture PNG"),
                  tags$hr(), 
                  plotlyOutput("overlapPLOT")),
-        
-        tabPanel("Raw Data", 
-                 downloadButton('downloadData', 'Download'), 
-                 radioButtons("filetype", "File type:", choices = c("csv", "tsv")), 
-                 tableOutput("table")),
                  
         tabPanel("Jaccard Similarity",
-                 plotOutput("jaccard"),
-                 tableOutput("JacTable"))
+                 h4("This tab displays the Jaccard similarity dendrogram for the inferred networks."),
+                 actionButton("shotJaccard", "Capture PNG"),
+                 plotOutput("jaccard"))
       )
     )
   )
