@@ -382,16 +382,21 @@ server <- function(input, output) {
   
   # Reactive: Overlap Plot Object
   overlap_plot_obj <- reactive({
-    if (input$raw == TRUE) {
-      return(NULL)
-    }
-    if (input$data == "tlsco") {
-      validate(need(FALSE, "Not available for TLSCO"))
-    }
+    plot_data_raw <- NULL
     
-    idx <- as.numeric(input$sparsity)
-    plot_data_raw <- plot_data_map[[input$data]][[idx]]
-    cutoffs_raw <- cutoff_data_map[[input$data]][[idx]]
+    if (input$raw == TRUE) {
+      inFile <- input$overlapFile
+      if (!is.null(inFile)) {
+        plot_data_raw <- read.csv(inFile$datapath, header = FALSE, sep = input$sep)
+      }
+    } else {
+      if (input$data == "tlsco") {
+        validate(need(FALSE, "Not available for TLSCO"))
+      }
+      
+      idx <- as.numeric(input$sparsity)
+      plot_data_raw <- plot_data_map[[input$data]][[idx]]
+    }
     
     if (is.null(plot_data_raw)) return(NULL)
     
@@ -410,8 +415,6 @@ server <- function(input, output) {
     
     # Ensure all columns are numeric to avoid factor issues
     plot_df[] <- lapply(plot_df, function(x) as.numeric(as.character(x)))
-    
-    cutoff_df <- as.data.frame(cutoffs_raw)
     
     long <- melt(plot_df, id.vars = c("bins"))
     long$bins <- as.numeric(long$bins)
@@ -608,6 +611,7 @@ ui <- fluidPage(
       conditionalPanel(
         condition = "input.raw == true",
         fileInput('file1', 'Network file(s) to upload', multiple = TRUE),
+        fileInput('overlapFile', 'Overlap file to upload', multiple = FALSE),
         radioButtons('sep', 'Separator', c(Tab = '\t', Comma = ','), '\t', inline = TRUE)
       ),
       
@@ -625,6 +629,8 @@ ui <- fluidPage(
       ),tags$br(),
       tags$div(class="header", checked=NA,
                tags$a(href="https://bitbucket.org/sonnhammergrni/genespider/src/BFECV/%2BMethods/BalanceFitError.m", "Inference code on Bitbucket",target="_blank")),
+      tags$div(class="header", checked=NA,
+               tags$a(href="https://github.com/dcolinmorgan/pyGS", "Python version (pyGS)",target="_blank")),
       tags$div(class="header", checked=NA,
                tags$a(href="https://github.com/dcolinmorgan/cancer-grn", "Shiny app on Github",target="_blank")),
       tags$div(class="header", checked=NA,
